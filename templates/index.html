@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IPO Shareholding Excel Generator</title>
+<style>
+  :root{
+    --bg:#0f172a; --card:#1e293b; --muted:#94a3b8; --text:#e2e8f0;
+    --accent:#38bdf8; --accent2:#0ea5e9; --ok:#22c55e; --err:#ef4444;
+    --line:#334155;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; font-family:'Segoe UI',system-ui,Arial,sans-serif;
+    background:linear-gradient(135deg,#0f172a,#111827); color:var(--text);
+    min-height:100vh; display:flex; justify-content:center; padding:32px 16px;
+  }
+  .wrap{width:100%; max-width:860px}
+  h1{font-size:26px; margin:0 0 4px}
+  .sub{color:var(--muted); margin:0 0 24px; font-size:14px}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:16px;
+    padding:24px; box-shadow:0 10px 40px rgba(0,0,0,.35); margin-bottom:20px;
+  }
+  .row{display:flex; gap:18px; flex-wrap:wrap}
+  .field{flex:1; min-width:200px}
+  label{display:block; font-size:13px; color:var(--muted); margin-bottom:6px}
+  input[type=date]{
+    width:100%; padding:12px 14px; border-radius:10px; border:1px solid var(--line);
+    background:#0b1220; color:var(--text); font-size:15px; color-scheme:dark;
+  }
+  input[type=date]:focus{outline:none; border-color:var(--accent)}
+  .actions{margin-top:22px; display:flex; align-items:center; gap:16px; flex-wrap:wrap}
+  button{
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#04121c;
+    border:none; padding:13px 26px; font-size:15px; font-weight:700; border-radius:10px;
+    cursor:pointer; transition:transform .05s, opacity .2s;
+  }
+  button:hover{transform:translateY(-1px)}
+  button:disabled{opacity:.5; cursor:not-allowed; transform:none}
+  .hint{color:var(--muted); font-size:12.5px}
+  .progress-wrap{display:none}
+  .bar{height:10px; background:#0b1220; border-radius:999px; overflow:hidden; border:1px solid var(--line)}
+  .bar > i{display:block; height:100%; width:0%;
+    background:linear-gradient(90deg,var(--accent),var(--accent2)); transition:width .4s}
+  .stage{margin:14px 0 8px; font-size:14px; color:var(--text)}
+  .stage b{color:var(--accent)}
+  .log{
+    background:#070d17; border:1px solid var(--line); border-radius:10px; padding:12px 14px;
+    height:280px; overflow:auto; font-family:'Consolas',monospace; font-size:12.5px;
+    color:#a7b4c7; white-space:pre-wrap; line-height:1.5;
+  }
+  .result{display:none; margin-top:8px}
+  .result.ok{color:var(--ok)} .result.err{color:var(--err)}
+  .dl{
+    display:inline-block; margin-top:12px; background:var(--ok); color:#04121c;
+    padding:12px 22px; border-radius:10px; font-weight:700; text-decoration:none;
+  }
+  .steps{font-size:12.5px; color:var(--muted); margin-top:10px; line-height:1.7}
+  .steps code{background:#0b1220; padding:1px 6px; border-radius:6px; color:#cbd5e1}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>IPO Shareholding Excel Generator</h1>
+    <p class="sub">Pick a date range for SEBI "Final Offer Documents filed with ROC".
+      The tool finds IPO companies with market cap &gt; 3000 cr and builds a two-sheet Excel
+      (company list + detailed promoter / public shareholding).</p>
+
+    <div class="card">
+      <div class="row">
+        <div class="field">
+          <label for="from">Start date</label>
+          <input type="date" id="from" value="2025-11-01">
+        </div>
+        <div class="field">
+          <label for="to">End date</label>
+          <input type="date" id="to" value="2026-07-10">
+        </div>
+      </div>
+      <div class="actions">
+        <button id="go">Generate Excel</button>
+        <span class="hint">Takes a few minutes — it visits SEBI, BSE and NSE live.</span>
+      </div>
+      <div class="steps">
+        Sheet 1: S.No, Company, BSE/NSE ticker, ISIN, Mcap, latest quarter, statement links.<br>
+        Sheet 2: promoters / promoter-group and every non-bold public shareholder (with &gt; 0% holding).
+      </div>
+    </div>
+
+    <div class="card progress-wrap" id="pw">
+      <div class="stage" id="stage">Starting…</div>
+      <div class="bar"><i id="barfill"></i></div>
+      <div class="log" id="log"></div>
+      <div class="result" id="result"></div>
+      <a class="dl" id="dl" style="display:none">Download Excel ▼</a>
+    </div>
+  </div>
+
+<script>
+const $ = s => document.querySelector(s);
+let poll = null;
+
+$("#go").addEventListener("click", async () => {
+  const from = $("#from").value, to = $("#to").value;
+  if(!from || !to){ alert("Please choose both dates."); return; }
+  $("#go").disabled = true;
+  $("#pw").style.display = "block";
+  $("#log").textContent = "";
+  $("#result").style.display = "none";
+  $("#dl").style.display = "none";
+  $("#stage").innerHTML = "Starting…";
+  $("#barfill").style.width = "0%";
+
+  const r = await fetch("/start", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({from, to})
+  });
+  const j = await r.json();
+  if(!r.ok){ alert(j.error || "Failed to start"); $("#go").disabled = false; return; }
+  poll = setInterval(refresh, 1200);
+});
+
+async function refresh(){
+  const r = await fetch("/status");
+  const s = await r.json();
+  $("#log").textContent = (s.log || []).join("\n");
+  $("#log").scrollTop = $("#log").scrollHeight;
+
+  const stageNames = {sebi:"Reading SEBI filings", bse:"Filtering on BSE (mcap > 3000cr)",
+    detail:"Extracting detailed shareholding", excel:"Writing Excel", done:"Done"};
+  let stage = stageNames[s.stage] || "Working";
+  if(s.total){
+    $("#stage").innerHTML = `<b>${stage}</b> — ${s.current}/${s.total}`;
+    $("#barfill").style.width = Math.round(100*s.current/Math.max(s.total,1)) + "%";
+  } else {
+    $("#stage").innerHTML = `<b>${stage}</b>…`;
+  }
+
+  if(s.finished){
+    clearInterval(poll);
+    $("#go").disabled = false;
+    if(s.error){
+      $("#result").className = "result err";
+      $("#result").textContent = "Failed: " + s.error;
+      $("#result").style.display = "block";
+    } else {
+      $("#barfill").style.width = "100%";
+      $("#stage").innerHTML = "<b>Done</b>";
+      $("#result").className = "result ok";
+      $("#result").textContent = `Generated ${s.count} companies.`;
+      $("#result").style.display = "block";
+      $("#dl").href = "/download/" + encodeURIComponent(s.file);
+      $("#dl").style.display = "inline-block";
+    }
+  }
+}
+</script>
+</body>
+</html>
