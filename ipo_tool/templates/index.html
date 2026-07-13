@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IPO Shareholding Excel Generator</title>
+<style>
+  :root{
+    --bg:#0f172a; --card:#1e293b; --muted:#94a3b8; --text:#e2e8f0;
+    --accent:#38bdf8; --accent2:#0ea5e9; --ok:#22c55e; --err:#ef4444;
+    --line:#334155;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; font-family:'Segoe UI',system-ui,Arial,sans-serif;
+    background:linear-gradient(135deg,#0f172a,#111827); color:var(--text);
+    min-height:100vh; display:flex; justify-content:center; padding:32px 16px;
+  }
+  .wrap{width:100%; max-width:860px}
+  h1{font-size:26px; margin:0 0 4px}
+  .sub{color:var(--muted); margin:0 0 24px; font-size:14px}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:16px;
+    padding:24px; box-shadow:0 10px 40px rgba(0,0,0,.35); margin-bottom:20px;
+  }
+  .row{display:flex; gap:18px; flex-wrap:wrap}
+  .field{flex:1; min-width:200px}
+  label{display:block; font-size:13px; color:var(--muted); margin-bottom:6px}
+  input[type=date],input[type=text]{
+    width:100%; padding:12px 14px; border-radius:10px; border:1px solid var(--line);
+    background:#0b1220; color:var(--text); font-size:15px; color-scheme:dark;
+  }
+  input[type=date]:focus,input[type=text]:focus{outline:none; border-color:var(--accent)}
+  .actions{margin-top:22px; display:flex; align-items:center; gap:16px; flex-wrap:wrap}
+  button{
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#04121c;
+    border:none; padding:13px 26px; font-size:15px; font-weight:700; border-radius:10px;
+    cursor:pointer; transition:transform .05s, opacity .2s;
+  }
+  button:hover{transform:translateY(-1px)}
+  button:disabled{opacity:.5; cursor:not-allowed; transform:none}
+  .hint{color:var(--muted); font-size:12.5px}
+  .progress-wrap{display:none}
+  .bar{height:10px; background:#0b1220; border-radius:999px; overflow:hidden; border:1px solid var(--line)}
+  .bar > i{display:block; height:100%; width:0%;
+    background:linear-gradient(90deg,var(--accent),var(--accent2)); transition:width .4s}
+  .stage{margin:14px 0 8px; font-size:14px; color:var(--text)}
+  .stage b{color:var(--accent)}
+  .log{
+    background:#070d17; border:1px solid var(--line); border-radius:10px; padding:12px 14px;
+    height:280px; overflow:auto; font-family:'Consolas',monospace; font-size:12.5px;
+    color:#a7b4c7; white-space:pre-wrap; line-height:1.5;
+  }
+  .result{display:none; margin-top:8px}
+  .result.ok{color:var(--ok)} .result.err{color:var(--err)}
+  .dl{
+    display:inline-block; margin-top:12px; background:var(--ok); color:#04121c;
+    padding:12px 22px; border-radius:10px; font-weight:700; text-decoration:none;
+  }
+  .steps{font-size:12.5px; color:var(--muted); margin-top:10px; line-height:1.7}
+  .steps code{background:#0b1220; padding:1px 6px; border-radius:6px; color:#cbd5e1}
+  h2{font-size:19px; margin:0 0 4px}
+  .spinner{display:inline-block; width:15px; height:15px; border:2px solid var(--line);
+    border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite;
+    vertical-align:-2px; margin-right:8px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .meta{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+    gap:12px; margin:4px 0 18px}
+  .meta .k{font-size:11.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.03em}
+  .meta .v{font-size:15px; color:var(--text); font-weight:600; margin-top:2px;
+    word-break:break-word}
+  .meta .v a{color:var(--accent); text-decoration:none}
+  .tbl-title{font-size:14px; font-weight:700; margin:18px 0 8px; color:var(--accent)}
+  table.shp{width:100%; border-collapse:collapse; font-size:13px}
+  table.shp th,table.shp td{border:1px solid var(--line); padding:8px 10px; text-align:left;
+    vertical-align:top}
+  table.shp th{background:#0b1220; color:var(--muted); font-weight:600;
+    position:sticky; top:0}
+  table.shp td.pct{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
+  table.shp tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+  .tbl-scroll{max-height:420px; overflow:auto; border-radius:10px; border:1px solid var(--line)}
+  .empty{color:var(--muted); font-size:13px; padding:10px 0}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>IPO Shareholding Excel Generator</h1>
+    <p class="sub">Pick a date range for SEBI "Final Offer Documents filed with ROC".
+      The tool finds IPO companies with market cap &gt; 3000 cr and builds a two-sheet Excel
+      (company list + detailed promoter / public shareholding).</p>
+
+    <div class="card">
+      <div class="row">
+        <div class="field">
+          <label for="from">Start date</label>
+          <input type="date" id="from" value="2025-11-01">
+        </div>
+        <div class="field">
+          <label for="to">End date</label>
+          <input type="date" id="to" value="2026-07-10">
+        </div>
+      </div>
+      <div class="actions">
+        <button id="go">Generate Excel</button>
+        <span class="hint">Takes a few minutes — it visits SEBI, BSE and NSE live.</span>
+      </div>
+      <div class="steps">
+        Sheet 1: S.No, Company, BSE/NSE ticker, ISIN, Mcap, latest quarter, statement links.<br>
+        Sheet 2: promoters / promoter-group and every non-bold public shareholder (with &gt; 0% holding).
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Look up a single company</h2>
+      <p class="sub" style="margin:0 0 16px">Search any listed company by name to see its
+        latest shareholding pattern (same columns as the Excel) right here.</p>
+      <div class="row">
+        <div class="field" style="flex:3">
+          <label for="q">Company name</label>
+          <input type="text" id="q" placeholder="e.g. Delhivery Limited"
+                 autocomplete="off">
+        </div>
+        <div class="field" style="flex:0 0 auto; display:flex; align-items:flex-end">
+          <button id="search">Search</button>
+        </div>
+      </div>
+      <div class="hint" id="lookStatus" style="margin-top:14px"></div>
+    </div>
+
+    <div class="card" id="lookCard" style="display:none">
+      <div id="summary"></div>
+      <div id="promWrap"></div>
+      <div id="pubWrap"></div>
+    </div>
+
+    <div class="card progress-wrap" id="pw">
+      <div class="stage" id="stage">Starting…</div>
+      <div class="bar"><i id="barfill"></i></div>
+      <div class="log" id="log"></div>
+      <div class="result" id="result"></div>
+      <a class="dl" id="dl" style="display:none">Download Excel ▼</a>
+    </div>
+  </div>
+
+<script>
+const $ = s => document.querySelector(s);
+let poll = null;
+
+$("#go").addEventListener("click", async () => {
+  const from = $("#from").value, to = $("#to").value;
+  if(!from || !to){ alert("Please choose both dates."); return; }
+  $("#go").disabled = true;
+  $("#pw").style.display = "block";
+  $("#log").textContent = "";
+  $("#result").style.display = "none";
+  $("#dl").style.display = "none";
+  $("#stage").innerHTML = "Starting…";
+  $("#barfill").style.width = "0%";
+
+  const r = await fetch("/start", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({from, to})
+  });
+  const j = await r.json();
+  if(!r.ok){ alert(j.error || "Failed to start"); $("#go").disabled = false; return; }
+  poll = setInterval(refresh, 1200);
+});
+
+async function refresh(){
+  const r = await fetch("/status");
+  const s = await r.json();
+  $("#log").textContent = (s.log || []).join("\n");
+  $("#log").scrollTop = $("#log").scrollHeight;
+
+  const stageNames = {sebi:"Reading SEBI filings", bse:"Filtering on BSE (mcap > 3000cr)",
+    detail:"Extracting detailed shareholding", excel:"Writing Excel", done:"Done"};
+  let stage = stageNames[s.stage] || "Working";
+  if(s.total){
+    $("#stage").innerHTML = `<b>${stage}</b> — ${s.current}/${s.total}`;
+    $("#barfill").style.width = Math.round(100*s.current/Math.max(s.total,1)) + "%";
+  } else {
+    $("#stage").innerHTML = `<b>${stage}</b>…`;
+  }
+
+  if(s.finished){
+    clearInterval(poll);
+    $("#go").disabled = false;
+    if(s.error){
+      $("#result").className = "result err";
+      $("#result").textContent = "Failed: " + s.error;
+      $("#result").style.display = "block";
+    } else {
+      $("#barfill").style.width = "100%";
+      $("#stage").innerHTML = "<b>Done</b>";
+      $("#result").className = "result ok";
+      $("#result").textContent = `Generated ${s.count} companies.`;
+      $("#result").style.display = "block";
+      $("#dl").href = "/download/" + encodeURIComponent(s.file);
+      $("#dl").style.display = "inline-block";
+    }
+  }
+}
+
+/* ---------------- single-company lookup ---------------- */
+const esc = t => (t == null ? "" : String(t)).replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtPct = v => (v == null || v === "") ? "" : Number(v).toFixed(2) + "%";
+
+async function doSearch(){
+  const q = $("#q").value.trim();
+  if(!q){ $("#lookStatus").textContent = "Please enter a company name."; return; }
+  $("#search").disabled = true;
+  $("#lookCard").style.display = "none";
+  $("#lookStatus").innerHTML = `<span class="spinner"></span>Searching BSE / NSE for “${esc(q)}” — this takes ~15-30s…`;
+  try{
+    const r = await fetch("/company", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({q})
+    });
+    const d = await r.json();
+    if(!r.ok){ $("#lookStatus").textContent = d.error || "Lookup failed."; return; }
+    if(!d.found){
+      $("#lookStatus").textContent = `No BSE match found for “${q}”.`;
+      return;
+    }
+    $("#lookStatus").textContent = "";
+    renderCompany(d);
+    $("#lookCard").style.display = "block";
+  }catch(e){
+    $("#lookStatus").textContent = "Lookup failed: " + e;
+  }finally{
+    $("#search").disabled = false;
+  }
+}
+
+function metaItem(k, v){
+  return `<div><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`;
+}
+
+function renderCompany(d){
+  const mcap = (d.mcap == null) ? "—"
+    : Number(d.mcap).toLocaleString("en-IN", {maximumFractionDigits:2});
+  const link = (u, t) => u ? `<a href="${esc(u)}" target="_blank" rel="noopener">${t}</a>` : "—";
+  $("#summary").innerHTML = `
+    <h2>${esc(d.name)}</h2>
+    <div class="meta">
+      ${metaItem("BSE Ticker", esc(d.bse_ticker) || "—")}
+      ${metaItem("BSE Scrip Code", esc(d.scripcode) || "—")}
+      ${metaItem("NSE Ticker", esc(d.nse_ticker) || "—")}
+      ${metaItem("ISIN", esc(d.isin) || "—")}
+      ${metaItem("Mcap Full (Cr.)", mcap)}
+      ${metaItem("Latest Quarter", esc(d.quarter) || "—")}
+      ${metaItem("Promoter Statement", link(d.prom_url, "Open"))}
+      ${metaItem("Public Statement", link(d.pub_url, "Open"))}
+    </div>`;
+
+  $("#promWrap").innerHTML =
+    tableHTML("Promoter &amp; Promoter Group",
+      ["Category / Name of Shareholder", "Promoter / Promoter Group",
+       "Shareholding % (SCRR, 1957 as % of A+B+C2)"],
+      d.promoters);
+
+  $("#pubWrap").innerHTML =
+    tableHTML("Public Shareholders",
+      ["Category / Name of Shareholder", "Bold Heading",
+       "Shareholding % (SCRR, 1957 as % of A+B+C2)"],
+      d.public);
+}
+
+function tableHTML(title, headers, rows){
+  if(!rows || !rows.length){
+    return `<div class="tbl-title">${title}</div>
+            <div class="empty">No qualifying rows (&gt; 0%) for this quarter.</div>`;
+  }
+  const head = headers.map(h => `<th>${h}</th>`).join("");
+  const body = rows.map(rw => `<tr>
+      <td>${esc(rw[0])}</td>
+      <td>${esc(rw[1]) || "—"}</td>
+      <td class="pct">${fmtPct(rw[2])}</td>
+    </tr>`).join("");
+  return `<div class="tbl-title">${title}</div>
+    <div class="tbl-scroll"><table class="shp">
+      <thead><tr>${head}</tr></thead><tbody>${body}</tbody>
+    </table></div>`;
+}
+
+$("#search").addEventListener("click", doSearch);
+$("#q").addEventListener("keydown", e => { if(e.key === "Enter") doSearch(); });
+</script>
+</body>
+</html>
