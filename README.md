@@ -29,13 +29,15 @@ quarter, statement pages) and the NSE `globalSearch` API for the NSE ticker.
 ```bash
 cd ipo-tool
 pip install -r requirements.txt
-python -m playwright install chromium
 ```
 
-BSE blocks Playwright's bundled Chromium (403 Access Denied). The app looks
-for **Google Chrome** or **Microsoft Edge** on disk and only continues if BSE
-actually returns 200. Install Chrome if you see an Access Denied error, then
-restart `python app.py` so it picks up the new code.
+BSE blocks Playwright's bundled Chromium (403 Access Denied). The app needs
+**Google Chrome** (or Edge) and only continues if BSE returns 200.
+
+- **This PC:** install Chrome, then `python app.py`.
+- **Render / Docker:** the `Dockerfile` installs real Chrome. The Render
+  service must use the **Docker** environment (not native Python) and at
+  least **1 GB RAM** (2 GB is safer). Redeploy after pulling this repo.
 
 ## Run
 

@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: ipo-tool
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"

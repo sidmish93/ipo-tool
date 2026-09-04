@@ -33,6 +33,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 _BROWSER_ARGS = [
     "--disable-blink-features=AutomationControlled",
     "--no-sandbox",
+    "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--disable-extensions",
@@ -40,10 +41,40 @@ _BROWSER_ARGS = [
 _STEALTH_JS = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
 
 
+def _playwright_chrome_bins():
+    """Chrome-for-Testing binaries under Playwright's cache (Render/Docker)."""
+    roots = [
+        os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
+        os.path.expanduser("~/.cache/ms-playwright"),
+        "/ms-playwright",
+        "/opt/render/project/.cache/ms-playwright",
+        "/opt/render/.cache/ms-playwright",
+    ]
+    found = []
+    for root in roots:
+        if not root or not os.path.isdir(root):
+            continue
+        try:
+            for dirpath, dirnames, files in os.walk(root):
+                low = dirpath.replace("\\", "/").lower()
+                if "chromium" in low:
+                    dirnames[:] = []
+                    continue
+                if "chrome-" not in low and "/chrome/" not in low:
+                    continue
+                for name in files:
+                    if name in ("chrome", "chrome.exe"):
+                        found.append(os.path.join(dirpath, name))
+        except OSError:
+            continue
+    return found
+
+
 def _installed_browsers():
     """Yield (label, executable_path) for Chrome/Edge on this machine."""
     home = os.path.expanduser("~")
     candidates = [
+        ("Chrome", os.environ.get("CHROME_PATH") or os.environ.get("CHROME_BIN")),
         ("Chrome", os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"),
                                 "Google", "Chrome", "Application", "chrome.exe")),
         ("Chrome", os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
@@ -56,11 +87,14 @@ def _installed_browsers():
                               "Microsoft", "Edge", "Application", "msedge.exe")),
         ("Chrome", "/usr/bin/google-chrome"),
         ("Chrome", "/usr/bin/google-chrome-stable"),
+        ("Chrome", "/opt/google/chrome/chrome"),
         ("Chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
         ("Edge", "/usr/bin/microsoft-edge"),
         ("Edge", os.path.join(home, "AppData", "Local", "Microsoft", "Edge",
                               "Application", "msedge.exe")),
     ]
+    for path in _playwright_chrome_bins():
+        candidates.append(("Chrome", path))
     seen = set()
     for label, path in candidates:
         if path and os.path.isfile(path) and path not in seen:
@@ -68,8 +102,14 @@ def _installed_browsers():
             yield label, path
 
 
+def _can_open_window():
+    if os.name == "nt":
+        return True
+    return bool(os.environ.get("DISPLAY"))
+
+
 def _browser_specs():
-    """Launch recipes, real Chrome/Edge first. Bundled Chromium is last."""
+    """Launch recipes. Real Chrome/Edge only — bundled Chromium is blocked by BSE."""
     common = {
         "args": _BROWSER_ARGS,
         "ignore_default_args": ["--enable-automation"],
@@ -84,11 +124,12 @@ def _browser_specs():
                   "launch": {"channel": "chrome", "headless": True, **common}})
     specs.append({"label": "Playwright channel=msedge",
                   "launch": {"channel": "msedge", "headless": True, **common}})
-    for label, path in _installed_browsers():
-        specs.append({
-            "label": f"{label} window",
-            "launch": {"executable_path": path, "headless": False, **common},
-        })
+    if _can_open_window():
+        for label, path in _installed_browsers():
+            specs.append({
+                "label": f"{label} window",
+                "launch": {"executable_path": path, "headless": False, **common},
+            })
     return specs
 
 
@@ -155,8 +196,10 @@ def _open_session(playwright):
         errors.append(f"{spec['label']}: BSE returned Access Denied")
     detail = " | ".join(errors[:6]) if errors else "no Chrome/Edge found"
     raise RuntimeError(
-        "BSE blocked the browser. Install Google Chrome (the real browser, "
-        "not only Playwright), close extra Chrome windows, and try again. "
+        "BSE blocked the browser. On a PC, install Google Chrome (not only "
+        "Playwright) and close extra Chrome windows. On Render, the service "
+        "must use the Docker environment so the image can install real Chrome "
+        "(native Python + Playwright Chromium is blocked). "
         f"Tried: {detail}"
     )
 

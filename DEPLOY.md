@@ -57,18 +57,20 @@ or use a free Cloudflare Tunnel. Ask me and I'll add the config.
 
 ---
 
-## Option B — Render (simplest, but the free tier sleeps)
+## Option B — Render
 
-Render's free web service is the easiest deploy, but it **spins down after ~15 min idle**
-(first request after that is slow) and gives 512 MB RAM (tight for Chromium — a heavy run
-can occasionally get killed). Fine for light, tolerant use.
+BSE blocks Playwright's bundled Chromium. The `Dockerfile` therefore installs
+**real Google Chrome**. A native Python Render service (pip + `playwright install
+chromium`) will keep failing with "Install Google Chrome".
 
-1. Push `ipo_tool/` to a GitHub repo.
+1. Push this repo to GitHub.
 2. Render → **New → Web Service** → connect the repo.
-3. Environment: **Docker** (it auto-detects the `Dockerfile`). No build/start command needed.
-4. Instance type: Free. Deploy. Render gives you a public `https://…onrender.com` URL.
+3. Environment: **Docker** (auto-detects `Dockerfile`). Do **not** use native Python.
+4. Instance: **Standard (2 GB)** if you can. Free/Starter 512 MB often kills Chrome.
+5. Deploy. Render injects `PORT`; `serve.py` already reads it.
 
-(Render injects `PORT` automatically; `serve.py` already reads it.)
+If the service already exists as native Python, open **Settings → Build & Deploy**
+and switch the runtime to **Docker**, then Manual Deploy.
 
 ---
 
