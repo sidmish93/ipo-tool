@@ -27,6 +27,47 @@ from openpyxl.utils import get_column_letter
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
 
+# BSE's WAF returns 403 to Playwright's bundled Chromium. A real Chrome/Edge
+# install on the machine is accepted. Try those first.
+_BROWSER_CHANNELS = ("chrome", "msedge", None)
+_BROWSER_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-extensions",
+]
+
+
+def _launch_browser(playwright):
+    """Launch Chromium, preferring an installed Chrome/Edge over bundled.
+
+    Returns (browser, label). Raises if every channel fails to start.
+    """
+    last = None
+    for channel in _BROWSER_CHANNELS:
+        try:
+            kwargs = {"headless": True, "args": _BROWSER_ARGS}
+            if channel:
+                kwargs["channel"] = channel
+            browser = playwright.chromium.launch(**kwargs)
+            return browser, channel or "chromium"
+        except Exception as e:
+            last = e
+    raise RuntimeError(
+        "Could not launch Chrome, Edge, or Chromium. "
+        "Install Google Chrome and retry. "
+        f"Last error: {last}"
+    )
+
+
+def _bse_blocked(page) -> bool:
+    try:
+        title = (page.title() or "").lower()
+    except Exception:
+        title = ""
+    return "access denied" in title
+
 SEBI_LIST = ("https://www.sebi.gov.in/sebiweb/home/HomeAction.do"
              "?doListing=yes&sid=3&ssid=15&smid=12")
 MCAP_THRESHOLD = 3000.0
@@ -86,7 +127,8 @@ def _clean_company(title):
     first line only, then strip the trailing '- Prospectus' marker.
     """
     first_line = title.splitlines()[0] if title else ""
-    t = re.sub(r"\s*-\s*(abridged\s+)?prospectus.*$", "", first_line,
+    first_line = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", first_line)
+    t = re.sub(r"\s*[-–—]\s*(abridged\s+)?prospectus.*$", "", first_line,
                flags=re.IGNORECASE).strip()
     return t
 
@@ -417,19 +459,14 @@ class Pipeline:
     # ----- orchestration -------------------------------------------------- #
     def run(self, dfrom, dto, out_path):
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    # flags that keep Chromium stable / lean on small cloud VMs
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-extensions",
-                ],
+            browser, label = _launch_browser(p)
+            self.log(f"Browser: {label}", stage="sebi")
+            ctx = browser.new_context(
+                user_agent=UA,
+                viewport={"width": 1440, "height": 900},
+                locale="en-IN",
+                extra_http_headers={"Accept-Language": "en-IN,en;q=0.9"},
             )
-            ctx = browser.new_context(user_agent=UA,
-                                      viewport={"width": 1440, "height": 900})
             ctx.set_default_timeout(60000)
             try:
                 sebi_page = ctx.new_page()
@@ -442,6 +479,12 @@ class Pipeline:
                 bpage = ctx.new_page()
                 bpage.goto("https://www.bseindia.com/", wait_until="domcontentloaded")
                 bpage.wait_for_timeout(1500)
+                if _bse_blocked(bpage):
+                    raise RuntimeError(
+                        "BSE blocked this browser (403 Access Denied). "
+                        "Install Google Chrome and run again — BSE rejects "
+                        "Playwright's bundled Chromium."
+                    )
 
                 npage = ctx.new_page()
                 try:
@@ -514,22 +557,25 @@ class Pipeline:
         the company is, so it works for interactive search of any listed name.
         """
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox", "--disable-dev-shm-usage",
-                    "--disable-gpu", "--disable-extensions",
-                ],
+            browser, _label = _launch_browser(p)
+            ctx = browser.new_context(
+                user_agent=UA,
+                viewport={"width": 1440, "height": 900},
+                locale="en-IN",
+                extra_http_headers={"Accept-Language": "en-IN,en;q=0.9"},
             )
-            ctx = browser.new_context(user_agent=UA,
-                                      viewport={"width": 1440, "height": 900})
             ctx.set_default_timeout(60000)
             try:
                 bpage = ctx.new_page()
                 bpage.goto("https://www.bseindia.com/",
                            wait_until="domcontentloaded")
                 bpage.wait_for_timeout(1200)
+                if _bse_blocked(bpage):
+                    raise RuntimeError(
+                        "BSE blocked this browser (403 Access Denied). "
+                        "Install Google Chrome and run again — BSE rejects "
+                        "Playwright's bundled Chromium."
+                    )
 
                 info = self._bse_lookup(bpage, name)
                 if not info or not info["scripcode"]:

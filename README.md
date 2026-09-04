@@ -27,10 +27,14 @@ quarter, statement pages) and the NSE `globalSearch` API for the NSE ticker.
 ## Setup (one time)
 
 ```bash
-cd ipo_tool
+cd ipo-tool
 pip install -r requirements.txt
 python -m playwright install chromium
 ```
+
+BSE blocks Playwright's bundled Chromium (403 Access Denied). The app now
+prefers an installed **Google Chrome** or **Microsoft Edge**. Install one of
+those if lookups come back empty.
 
 ## Run
 
