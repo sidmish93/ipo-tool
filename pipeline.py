@@ -14,6 +14,7 @@ Everything that touches SEBI / BSE / NSE runs inside a real Chromium browser
 "bold vs non-bold" distinction only exists in the rendered DOM.
 """
 
+import os
 import re
 import time
 import datetime
@@ -27,9 +28,8 @@ from openpyxl.utils import get_column_letter
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
 
-# BSE's WAF returns 403 to Playwright's bundled Chromium. A real Chrome/Edge
-# install on the machine is accepted. Try those first.
-_BROWSER_CHANNELS = ("chrome", "msedge", None)
+# BSE's WAF returns 403 to Playwright's bundled Chromium. Use a real
+# Chrome/Edge install and verify BSE actually loads before continuing.
 _BROWSER_ARGS = [
     "--disable-blink-features=AutomationControlled",
     "--no-sandbox",
@@ -37,28 +37,71 @@ _BROWSER_ARGS = [
     "--disable-gpu",
     "--disable-extensions",
 ]
+_STEALTH_JS = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
 
 
-def _launch_browser(playwright):
-    """Launch Chromium, preferring an installed Chrome/Edge over bundled.
+def _installed_browsers():
+    """Yield (label, executable_path) for Chrome/Edge on this machine."""
+    home = os.path.expanduser("~")
+    candidates = [
+        ("Chrome", os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+                                "Google", "Chrome", "Application", "chrome.exe")),
+        ("Chrome", os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+                                "Google", "Chrome", "Application", "chrome.exe")),
+        ("Chrome", os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                                "Google", "Chrome", "Application", "chrome.exe")),
+        ("Edge", os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+                              "Microsoft", "Edge", "Application", "msedge.exe")),
+        ("Edge", os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+                              "Microsoft", "Edge", "Application", "msedge.exe")),
+        ("Chrome", "/usr/bin/google-chrome"),
+        ("Chrome", "/usr/bin/google-chrome-stable"),
+        ("Chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        ("Edge", "/usr/bin/microsoft-edge"),
+        ("Edge", os.path.join(home, "AppData", "Local", "Microsoft", "Edge",
+                              "Application", "msedge.exe")),
+    ]
+    seen = set()
+    for label, path in candidates:
+        if path and os.path.isfile(path) and path not in seen:
+            seen.add(path)
+            yield label, path
 
-    Returns (browser, label). Raises if every channel fails to start.
-    """
-    last = None
-    for channel in _BROWSER_CHANNELS:
-        try:
-            kwargs = {"headless": True, "args": _BROWSER_ARGS}
-            if channel:
-                kwargs["channel"] = channel
-            browser = playwright.chromium.launch(**kwargs)
-            return browser, channel or "chromium"
-        except Exception as e:
-            last = e
-    raise RuntimeError(
-        "Could not launch Chrome, Edge, or Chromium. "
-        "Install Google Chrome and retry. "
-        f"Last error: {last}"
+
+def _browser_specs():
+    """Launch recipes, real Chrome/Edge first. Bundled Chromium is last."""
+    common = {
+        "args": _BROWSER_ARGS,
+        "ignore_default_args": ["--enable-automation"],
+    }
+    specs = []
+    for label, path in _installed_browsers():
+        specs.append({
+            "label": f"{label} headless",
+            "launch": {"executable_path": path, "headless": True, **common},
+        })
+    specs.append({"label": "Playwright channel=chrome",
+                  "launch": {"channel": "chrome", "headless": True, **common}})
+    specs.append({"label": "Playwright channel=msedge",
+                  "launch": {"channel": "msedge", "headless": True, **common}})
+    for label, path in _installed_browsers():
+        specs.append({
+            "label": f"{label} window",
+            "launch": {"executable_path": path, "headless": False, **common},
+        })
+    return specs
+
+
+def _new_context(browser):
+    ctx = browser.new_context(
+        user_agent=UA,
+        viewport={"width": 1440, "height": 900},
+        locale="en-IN",
+        extra_http_headers={"Accept-Language": "en-IN,en;q=0.9"},
     )
+    ctx.add_init_script(_STEALTH_JS)
+    ctx.set_default_timeout(60000)
+    return ctx
 
 
 def _bse_blocked(page) -> bool:
@@ -67,6 +110,55 @@ def _bse_blocked(page) -> bool:
     except Exception:
         title = ""
     return "access denied" in title
+
+
+def _bse_reachable(ctx) -> bool:
+    page = ctx.new_page()
+    try:
+        resp = page.goto("https://www.bseindia.com/",
+                         wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(1200)
+        status = resp.status if resp else 0
+        return status == 200 and not _bse_blocked(page)
+    except Exception:
+        return False
+    finally:
+        try:
+            page.close()
+        except Exception:
+            pass
+
+
+def _open_session(playwright):
+    """Launch a browser that BSE will actually talk to.
+
+    Returns (browser, context, label).
+    """
+    errors = []
+    for spec in _browser_specs():
+        try:
+            browser = playwright.chromium.launch(**spec["launch"])
+        except Exception as e:
+            errors.append(f"{spec['label']}: could not start ({e})")
+            continue
+        ctx = _new_context(browser)
+        if _bse_reachable(ctx):
+            return browser, ctx, spec["label"]
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        try:
+            browser.close()
+        except Exception:
+            pass
+        errors.append(f"{spec['label']}: BSE returned Access Denied")
+    detail = " | ".join(errors[:6]) if errors else "no Chrome/Edge found"
+    raise RuntimeError(
+        "BSE blocked the browser. Install Google Chrome (the real browser, "
+        "not only Playwright), close extra Chrome windows, and try again. "
+        f"Tried: {detail}"
+    )
 
 SEBI_LIST = ("https://www.sebi.gov.in/sebiweb/home/HomeAction.do"
              "?doListing=yes&sid=3&ssid=15&smid=12")
@@ -459,15 +551,8 @@ class Pipeline:
     # ----- orchestration -------------------------------------------------- #
     def run(self, dfrom, dto, out_path):
         with sync_playwright() as p:
-            browser, label = _launch_browser(p)
+            browser, ctx, label = _open_session(p)
             self.log(f"Browser: {label}", stage="sebi")
-            ctx = browser.new_context(
-                user_agent=UA,
-                viewport={"width": 1440, "height": 900},
-                locale="en-IN",
-                extra_http_headers={"Accept-Language": "en-IN,en;q=0.9"},
-            )
-            ctx.set_default_timeout(60000)
             try:
                 sebi_page = ctx.new_page()
                 self.log("Fetching SEBI final offer documents...", stage="sebi")
@@ -481,9 +566,8 @@ class Pipeline:
                 bpage.wait_for_timeout(1500)
                 if _bse_blocked(bpage):
                     raise RuntimeError(
-                        "BSE blocked this browser (403 Access Denied). "
-                        "Install Google Chrome and run again — BSE rejects "
-                        "Playwright's bundled Chromium."
+                        "BSE blocked the browser after launch. "
+                        "Close other Chrome windows and try again."
                     )
 
                 npage = ctx.new_page()
@@ -557,14 +641,7 @@ class Pipeline:
         the company is, so it works for interactive search of any listed name.
         """
         with sync_playwright() as p:
-            browser, _label = _launch_browser(p)
-            ctx = browser.new_context(
-                user_agent=UA,
-                viewport={"width": 1440, "height": 900},
-                locale="en-IN",
-                extra_http_headers={"Accept-Language": "en-IN,en;q=0.9"},
-            )
-            ctx.set_default_timeout(60000)
+            browser, ctx, _label = _open_session(p)
             try:
                 bpage = ctx.new_page()
                 bpage.goto("https://www.bseindia.com/",
@@ -572,9 +649,8 @@ class Pipeline:
                 bpage.wait_for_timeout(1200)
                 if _bse_blocked(bpage):
                     raise RuntimeError(
-                        "BSE blocked this browser (403 Access Denied). "
-                        "Install Google Chrome and run again — BSE rejects "
-                        "Playwright's bundled Chromium."
+                        "BSE blocked the browser after launch. "
+                        "Close other Chrome windows and try again."
                     )
 
                 info = self._bse_lookup(bpage, name)

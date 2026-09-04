@@ -32,9 +32,10 @@ pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
-BSE blocks Playwright's bundled Chromium (403 Access Denied). The app now
-prefers an installed **Google Chrome** or **Microsoft Edge**. Install one of
-those if lookups come back empty.
+BSE blocks Playwright's bundled Chromium (403 Access Denied). The app looks
+for **Google Chrome** or **Microsoft Edge** on disk and only continues if BSE
+actually returns 200. Install Chrome if you see an Access Denied error, then
+restart `python app.py` so it picks up the new code.
 
 ## Run
 
