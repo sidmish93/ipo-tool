@@ -3,7 +3,7 @@ services:
     name: ipo-tool
     runtime: docker
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /
+    healthCheckPath: /healthz
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"

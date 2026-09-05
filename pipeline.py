@@ -38,6 +38,11 @@ _BROWSER_ARGS = [
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--disable-extensions",
+    "--disable-background-networking",
+    "--renderer-process-limit=3",
+    "--mute-audio",
+    "--no-first-run",
+    "--no-default-browser-check",
 ]
 _STEALTH_JS = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
 
@@ -447,6 +452,12 @@ class Pipeline:
         date yet (still in the issue window).
         """
         out, seen = [], set()
+        try:
+            page.goto(CHITTOR_HOME, wait_until="domcontentloaded",
+                      timeout=45000)
+            page.wait_for_timeout(600)
+        except Exception:
+            pass
         for year in range(dfrom.year - 1, dto.year + 1):
             self._check_cancel()
             rows = self._chittor_year(page, year)
@@ -467,18 +478,18 @@ class Pipeline:
 
     def _chittor_year(self, page, year):
         """[(name, listing_date), ...] from the mainboard timetable."""
-        try:
-            page.goto(CHITTOR_HOME, wait_until="domcontentloaded",
-                      timeout=45000)
-            page.wait_for_timeout(600)
-        except Exception:
-            pass
         url = CHITTOR_LIST_API.format(year=year)
         res = None
         try:
             res = page.evaluate(self._FETCH_JS, url)
         except Exception:
-            res = None
+            try:
+                page.goto(CHITTOR_HOME, wait_until="domcontentloaded",
+                          timeout=45000)
+                page.wait_for_timeout(400)
+                res = page.evaluate(self._FETCH_JS, url)
+            except Exception:
+                res = None
         rows = []
         if res and res.get("ok") and isinstance(res.get("json"), dict):
             raw = res["json"].get("reportTableData") or []
@@ -877,22 +888,38 @@ class Pipeline:
                 list_page.close()
                 self._check_cancel()
 
+                self.log("Opening BSE for company lookup…", stage="bse")
                 bpage = ctx.new_page()
-                bpage.goto("https://www.bseindia.com/", wait_until="domcontentloaded")
-                bpage.wait_for_timeout(1500)
+                try:
+                    bpage.goto("https://www.bseindia.com/",
+                               wait_until="domcontentloaded", timeout=60000)
+                    bpage.wait_for_timeout(1500)
+                except Exception as e:
+                    raise RuntimeError(
+                        "Could not open BSE (common on Render datacenter IPs "
+                        f"or a small instance). {e}"
+                    ) from e
                 if _bse_blocked(bpage):
                     raise RuntimeError(
                         "BSE blocked the browser after launch. "
-                        "Close other Chrome windows and try again."
+                        "On Render, use the Docker runtime and a 2 GB instance."
                     )
 
-                npage = ctx.new_page()
-                try:
-                    npage.goto("https://www.nseindia.com/",
-                               wait_until="domcontentloaded")
-                    npage.wait_for_timeout(1500)
-                except Exception:
-                    pass
+                npage = None
+
+                def ensure_nse():
+                    nonlocal npage
+                    if npage is not None:
+                        return npage
+                    npage = ctx.new_page()
+                    try:
+                        npage.goto("https://www.nseindia.com/",
+                                   wait_until="domcontentloaded",
+                                   timeout=45000)
+                        npage.wait_for_timeout(1200)
+                    except Exception:
+                        pass
+                    return npage
 
                 self.log(f"Keeping companies with mcap > {threshold:.0f} cr.",
                          stage="bse")
@@ -914,7 +941,7 @@ class Pipeline:
                     if not qtr:
                         self.log("    no shareholding quarter, skipping", stage="bse")
                         continue
-                    nse = self._nse_ticker(npage, name, info["bse_name"],
+                    nse = self._nse_ticker(ensure_nse(), name, info["bse_name"],
                                            info["ticker"])
                     prom_url, pub_url = self._stmt_urls(
                         info["scripcode"], qtr["qid"], qtr["qname"])
@@ -925,7 +952,7 @@ class Pipeline:
                         self._public_rows(bpage, info["scripcode"], qtr["qid"]),
                         mcap)
                     promoters, public, meta = self._with_post_shp(
-                        bpage, npage, nse, info["scripcode"], qtr,
+                        bpage, ensure_nse(), nse, info["scripcode"], qtr,
                         promoters, public, mcap)
                     qualified.append({
                         "name": name,
@@ -950,7 +977,8 @@ class Pipeline:
                     bpage.wait_for_timeout(150)
 
                 bpage.close()
-                npage.close()
+                if npage is not None:
+                    npage.close()
             finally:
                 try:
                     ctx.close()

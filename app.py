@@ -6,6 +6,7 @@ Then open http://127.0.0.1:5000 in your browser.
 """
 
 import os
+import json
 import threading
 import datetime
 import traceback
@@ -19,6 +20,7 @@ from pipeline import (run_pipeline, lookup_company, split_terms,
 BASE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(BASE, "output")
 os.makedirs(OUT_DIR, exist_ok=True)
+JOB_PATH = os.path.join(OUT_DIR, "job.json")
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -51,10 +53,21 @@ def _found_companies(results):
     return [r for r in (results or []) if r.get("found")]
 
 
+def _save_job():
+    try:
+        tmp = JOB_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(_job, fh)
+        os.replace(tmp, JOB_PATH)
+    except OSError:
+        pass
+
+
 def _reset():
     _job.update(running=False, log=[], current=0, total=0, stage="",
                 finished=False, error=None, file=None, count=None,
                 cancelled=False)
+    _save_job()
 
 
 def _progress(msg, current=None, total=None, stage=None):
@@ -66,6 +79,38 @@ def _progress(msg, current=None, total=None, stage=None):
         _job["total"] = total
     if stage is not None:
         _job["stage"] = stage
+    _save_job()
+
+
+def _recover_job():
+    """If Render OOM-killed us mid-run, keep the log and mark it failed."""
+    try:
+        with open(JOB_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    for key in _job:
+        if key in data:
+            _job[key] = data[key]
+    if _job.get("running"):
+        _job["running"] = False
+        _job["finished"] = True
+        _job["error"] = (
+            "Server restarted during the run. On Render this is usually "
+            "Chrome running out of memory when BSE opens. Use a 2 GB "
+            "instance (Docker runtime) and try again."
+        )
+        _job.setdefault("log", [])
+        if not isinstance(_job["log"], list):
+            _job["log"] = []
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        _job["log"].append(f"[{ts}] ERROR: {_job['error']}")
+        _save_job()
+
+
+_recover_job()
 
 
 def _parse_mcap_min(raw):
@@ -100,7 +145,13 @@ def _worker(from_str, to_str, mcap_min):
     finally:
         _job["finished"] = True
         _job["running"] = False
+        _save_job()
         _gate.release()
+
+
+@app.route("/healthz")
+def healthz():
+    return "ok", 200
 
 
 @app.route("/")
@@ -136,6 +187,7 @@ def start():
     _cancel.clear()
     _job["running"] = True
     _job["mcap_min"] = mcap_min
+    _save_job()
 
     threading.Thread(target=_worker, args=(from_str, to_str, mcap_min),
                      daemon=True).start()
