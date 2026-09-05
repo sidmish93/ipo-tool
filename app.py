@@ -70,7 +70,8 @@ def _reset():
     _save_job()
 
 
-def _progress(msg, current=None, total=None, stage=None):
+def _progress(msg, current=None, total=None, stage=None, file=None, count=None,
+              **_extra):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     _job["log"].append(f"[{ts}] {msg}")
     if current is not None:
@@ -79,6 +80,10 @@ def _progress(msg, current=None, total=None, stage=None):
         _job["total"] = total
     if stage is not None:
         _job["stage"] = stage
+    if file is not None:
+        _job["file"] = file
+    if count is not None:
+        _job["count"] = count
     _save_job()
 
 

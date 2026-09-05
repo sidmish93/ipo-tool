@@ -15,9 +15,12 @@ BSE/NSE block plain HTTP and bundled Chromium.
 
 import os
 import re
+import json
 import time
 import datetime
 import urllib.parse
+import urllib.request
+import urllib.error
 
 from playwright.sync_api import sync_playwright
 from openpyxl import Workbook
@@ -44,6 +47,37 @@ _BROWSER_ARGS = [
     "--no-first-run",
     "--no-default-browser-check",
 ]
+
+
+def _low_mem():
+    """True on Render / 512 MB boxes — keep Chrome off except one company."""
+    flag = (os.environ.get("LOW_MEM") or "").strip().lower()
+    if flag in ("1", "true", "yes"):
+        return True
+    if flag in ("0", "false", "no"):
+        return False
+    if os.environ.get("RENDER"):
+        return True
+    try:
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    return kb < 768 * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return False
+
+
+def _chrome_args():
+    args = list(_BROWSER_ARGS)
+    if _low_mem():
+        args.extend([
+            "--single-process",
+            "--renderer-process-limit=1",
+            "--js-flags=--max-old-space-size=128",
+        ])
+    return args
 _STEALTH_JS = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
 
 
@@ -117,7 +151,7 @@ def _can_open_window():
 def _browser_specs():
     """Launch recipes. Real Chrome/Edge only — bundled Chromium is blocked by BSE."""
     common = {
-        "args": _BROWSER_ARGS,
+        "args": _chrome_args(),
         "ignore_default_args": ["--enable-automation"],
     }
     specs = []
@@ -176,10 +210,11 @@ def _bse_reachable(ctx) -> bool:
             pass
 
 
-def _open_session(playwright):
+def _open_session(playwright, probe=True):
     """Launch a browser that BSE will actually talk to.
 
-    Returns (browser, context, label).
+    Returns (browser, context, label). `probe=False` skips the extra BSE
+    tab (needed on 512 MB so we only ever have one Chrome page).
     """
     errors = []
     for spec in _browser_specs():
@@ -189,7 +224,7 @@ def _open_session(playwright):
             errors.append(f"{spec['label']}: could not start ({e})")
             continue
         ctx = _new_context(browser)
-        if _bse_reachable(ctx):
+        if not probe or _bse_reachable(ctx):
             return browser, ctx, spec["label"]
         try:
             ctx.close()
@@ -435,8 +470,8 @@ class Pipeline:
         self.cb = progress_cb or (lambda *a, **k: None)
         self.cancel_cb = cancel_cb or (lambda: False)
 
-    def log(self, msg, current=None, total=None, stage=None):
-        self.cb(msg, current=current, total=total, stage=stage)
+    def log(self, msg, current=None, total=None, stage=None, **extra):
+        self.cb(msg, current=current, total=total, stage=stage, **extra)
 
     def _check_cancel(self):
         if self.cancel_cb():
@@ -452,12 +487,13 @@ class Pipeline:
         date yet (still in the issue window).
         """
         out, seen = [], set()
-        try:
-            page.goto(CHITTOR_HOME, wait_until="domcontentloaded",
-                      timeout=45000)
-            page.wait_for_timeout(600)
-        except Exception:
-            pass
+        if page is not None:
+            try:
+                page.goto(CHITTOR_HOME, wait_until="domcontentloaded",
+                          timeout=45000)
+                page.wait_for_timeout(600)
+            except Exception:
+                pass
         for year in range(dfrom.year - 1, dto.year + 1):
             self._check_cancel()
             rows = self._chittor_year(page, year)
@@ -476,8 +512,37 @@ class Pipeline:
         out.sort(key=lambda x: x[1])
         return out
 
+    def _rows_from_chittor_payload(self, raw):
+        rows = []
+        for item in raw or []:
+            name = re.sub(r"<[^>]+>", "", str(item.get("Company") or ""))
+            name = re.sub(r"\s+", " ", name).strip(" .")
+            dt = _chittor_listing_date(item)
+            if name and dt:
+                rows.append((name, dt))
+        return rows
+
+    def _chittor_year_http(self, year):
+        url = CHITTOR_LIST_API.format(year=year)
+        req = urllib.request.Request(url, headers={
+            "User-Agent": UA,
+            "Accept": "application/json, text/plain, */*",
+            "Referer": CHITTOR_HOME,
+            "Origin": "https://www.chittorgarh.com",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                payload = json.loads(resp.read().decode("utf-8", "replace"))
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+            return []
+        if not isinstance(payload, dict):
+            return []
+        return self._rows_from_chittor_payload(payload.get("reportTableData"))
+
     def _chittor_year(self, page, year):
         """[(name, listing_date), ...] from the mainboard timetable."""
+        if page is None:
+            return self._chittor_year_http(year)
         url = CHITTOR_LIST_API.format(year=year)
         res = None
         try:
@@ -490,16 +555,10 @@ class Pipeline:
                 res = page.evaluate(self._FETCH_JS, url)
             except Exception:
                 res = None
-        rows = []
         if res and res.get("ok") and isinstance(res.get("json"), dict):
-            raw = res["json"].get("reportTableData") or []
-            for item in raw:
-                name = re.sub(r"<[^>]+>", "", str(item.get("Company") or ""))
-                name = re.sub(r"\s+", " ", name).strip(" .")
-                dt = _chittor_listing_date(item)
-                if name and dt:
-                    rows.append((name, dt))
-        return rows
+            return self._rows_from_chittor_payload(
+                res["json"].get("reportTableData"))
+        return []
 
     def _sebi_companies(self, page, dfrom, dto):
         """Return [(name, date)] of prospectuses filed within [dfrom, dto]."""
@@ -871,8 +930,82 @@ class Pipeline:
         return promoters, public, meta
 
     # ----- orchestration -------------------------------------------------- #
+    def _lookup_one_isolated(self, name, skip_tape=True):
+        """Launch Chrome for one name, then close it (512 MB path)."""
+        with sync_playwright() as p:
+            browser, ctx, _label = _open_session(p, probe=False)
+            try:
+                bpage = ctx.new_page()
+                try:
+                    bpage.goto("https://www.bseindia.com/",
+                               wait_until="domcontentloaded", timeout=60000)
+                    bpage.wait_for_timeout(800)
+                except Exception as e:
+                    return {"found": False, "query": name,
+                            "error": f"Could not open BSE: {e}"}
+                if _bse_blocked(bpage):
+                    return {"found": False, "query": name,
+                            "error": "BSE blocked the browser"}
+                return self._lookup_on_pages(
+                    bpage, None, name, skip_tape=skip_tape)
+            finally:
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+
+    def _run_low_mem(self, dfrom, dto, out_path, threshold):
+        self.log("Low-memory mode: IPO list over HTTP, Chrome opened and "
+                 "closed per company, NSE block/bulk skipped.", stage="list")
+        companies = self._listed_companies(None, dfrom, dto)
+        self.log(f"Found {len(companies)} listed IPOs in range.", stage="list")
+        qualified = []
+        total = len(companies)
+        fname = os.path.basename(out_path)
+        cut = int(threshold) if threshold == int(threshold) else threshold
+        title = f"IPO Companies >{cut}cr"
+        for i, (name, _dt) in enumerate(companies, 1):
+            self._check_cancel()
+            self.log(f"[{i}/{total}] {name}", current=i, total=total,
+                     stage="bse")
+            rec = self._lookup_one_isolated(name, skip_tape=True)
+            err = rec.get("error")
+            if err and not rec.get("found"):
+                self.log(f"    {err}", stage="bse")
+            if not rec.get("found"):
+                self.log("    not found on BSE, skipping", stage="bse")
+                continue
+            mcap = rec.get("mcap")
+            if mcap is None or mcap <= threshold:
+                self.log(f"    Mcap {mcap} <= {threshold:.0f}cr, skipping",
+                         stage="bse")
+                continue
+            if not rec.get("quarter"):
+                self.log("    no shareholding quarter, skipping", stage="bse")
+                continue
+            rec["name"] = name
+            qualified.append(rec)
+            _write_workbook(qualified, out_path, sheet1_title=title)
+            self.log(
+                f"    QUALIFIED  Mcap {mcap:,.2f}cr  {rec.get('bse_ticker')}  "
+                f"(promoters={len(rec.get('promoters') or [])}, "
+                f"public={len(rec.get('public') or [])})",
+                stage="bse", file=fname, count=len(qualified),
+            )
+        if not qualified:
+            _write_workbook([], out_path, sheet1_title=title)
+        self.log(f"Done. {len(qualified)} companies written.", stage="done",
+                 file=fname, count=len(qualified))
+        return qualified
+
     def run(self, dfrom, dto, out_path, mcap_min=None):
         threshold = MCAP_THRESHOLD if mcap_min is None else float(mcap_min)
+        if _low_mem():
+            return self._run_low_mem(dfrom, dto, out_path, threshold)
         qualified = []
         with sync_playwright() as p:
             self._check_cancel()
@@ -997,7 +1130,7 @@ class Pipeline:
         return qualified
 
     # ----- interactive search (one or many names, semicolon-separated) --- #
-    def _lookup_on_pages(self, bpage, npage, name):
+    def _lookup_on_pages(self, bpage, npage, name, skip_tape=False):
         """Resolve one name against pages already opened on BSE / NSE."""
         info = self._bse_lookup(bpage, name)
         if not info or not info["scripcode"]:
@@ -1005,11 +1138,13 @@ class Pipeline:
 
         mcap = self._bse_mcap(bpage, info["scripcode"])
         qtr = self._bse_quarter(bpage, info["scripcode"])
-        try:
-            nse = self._nse_ticker(npage, info["bse_name"],
-                                   info["bse_name"], info["ticker"])
-        except Exception:
-            nse = info["ticker"]
+        nse = info["ticker"]
+        if npage is not None and not skip_tape:
+            try:
+                nse = self._nse_ticker(npage, info["bse_name"],
+                                       info["bse_name"], info["ticker"])
+            except Exception:
+                nse = info["ticker"]
 
         promoters, public, prom_url, pub_url, quarter = [], [], "", "", ""
         meta = {}
@@ -1023,9 +1158,12 @@ class Pipeline:
             public = _with_holdings(
                 self._public_rows(bpage, info["scripcode"], qtr["qid"]),
                 mcap)
-            promoters, public, meta = self._with_post_shp(
-                bpage, npage, nse, info["scripcode"], qtr,
-                promoters, public, mcap)
+            if skip_tape or npage is None:
+                meta = {"quarter_end": qtr.get("as_of")}
+            else:
+                promoters, public, meta = self._with_post_shp(
+                    bpage, npage, nse, info["scripcode"], qtr,
+                    promoters, public, mcap)
 
         return {
             "found": True,
@@ -1056,6 +1194,14 @@ class Pipeline:
         terms = names if isinstance(names, (list, tuple)) else split_terms(names)
         if not terms:
             return []
+        if _low_mem():
+            out = []
+            total = len(terms)
+            for i, name in enumerate(terms, 1):
+                self.log(f"[{i}/{total}] {name}", current=i, total=total,
+                         stage="bse")
+                out.append(self._lookup_one_isolated(name, skip_tape=True))
+            return out
         with sync_playwright() as p:
             browser, ctx, _label = _open_session(p)
             try:

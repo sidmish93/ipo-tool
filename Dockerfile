@@ -6,7 +6,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     CHROME_BIN=/usr/bin/google-chrome-stable \
-    CHROME_PATH=/usr/bin/google-chrome-stable
+    CHROME_PATH=/usr/bin/google-chrome-stable \
+    LOW_MEM=1
 
 WORKDIR /app
 
