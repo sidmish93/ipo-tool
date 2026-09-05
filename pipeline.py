@@ -24,7 +24,11 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from deals import fetch_and_adjust, quarter_end as _quarter_end_date
+from deals import (
+    ADJ_UNDETERMINED,
+    fetch_and_adjust,
+    quarter_end as _quarter_end_date,
+)
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
@@ -1081,10 +1085,15 @@ def _holder_view(row, mcap=None):
         }
     if h.get("holding_cr") is None:
         h["holding_cr"] = _holding_cr(h.get("pct"), mcap)
-    if h.get("adj_holding_cr") is None:
-        h["adj_holding_cr"] = _holding_cr(h.get("adj_pct"), mcap)
     for k in ("bought", "sold"):
         h.setdefault(k, 0)
+    if h.get("adj_undetermined") or isinstance(h.get("adj_shares"), str):
+        h["adj_shares"] = ADJ_UNDETERMINED
+        h["adj_pct"] = ADJ_UNDETERMINED
+        h["adj_holding_cr"] = ADJ_UNDETERMINED
+        return h
+    if h.get("adj_holding_cr") is None:
+        h["adj_holding_cr"] = _holding_cr(h.get("adj_pct"), mcap)
     return h
 
 
@@ -1230,7 +1239,7 @@ def _write_workbook(companies, out_path, sheet1_title="IPO Companies >3000cr"):
             r += 1
         ws2.cell(row=start, column=1).font = comp_font
 
-    for c, w in enumerate([40, 26, 52, 40, 16, 14, 16, 16, 16, 16, 12, 18], 1):
+    for c, w in enumerate([40, 26, 52, 40, 16, 14, 16, 16, 16, 28, 28, 32], 1):
         ws2.column_dimensions[get_column_letter(c)].width = w
     ws2.freeze_panes = "A2"
     if r > 2:

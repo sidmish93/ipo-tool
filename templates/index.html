@@ -291,6 +291,13 @@ const fmtCr = v => (v == null || v === "") ? "—"
   : Number(v).toLocaleString("en-IN", {maximumFractionDigits:2});
 const fmtSh = v => (v == null || v === "") ? "—"
   : Math.round(Number(v)).toLocaleString("en-IN");
+const fmtAdj = (v, kind) => {
+  if (v == null || v === "") return "—";
+  if (typeof v === "string" && Number.isNaN(Number(v))) return esc(v);
+  if (kind === "pct") return fmtPct(v);
+  if (kind === "cr") return fmtCr(v);
+  return fmtSh(v);
+};
 
 async function doSearch(){
   const q = $("#q").value.trim();
@@ -429,9 +436,9 @@ function tableHTML(title, rows){
       <td class="pct">${fmtCr(rw.holding_cr)}</td>
       <td class="pct">${fmtSh(rw.bought)}</td>
       <td class="pct">${fmtSh(rw.sold)}</td>
-      <td class="pct">${fmtSh(rw.adj_shares)}</td>
-      <td class="pct">${fmtPct(rw.adj_pct)}</td>
-      <td class="pct">${fmtCr(rw.adj_holding_cr)}</td>
+      <td class="pct">${rw.adj_undetermined ? esc("Cannot be determined accurately") : fmtAdj(rw.adj_shares, "sh")}</td>
+      <td class="pct">${rw.adj_undetermined ? esc("Cannot be determined accurately") : fmtAdj(rw.adj_pct, "pct")}</td>
+      <td class="pct">${rw.adj_undetermined ? esc("Cannot be determined accurately") : fmtAdj(rw.adj_holding_cr, "cr")}</td>
     </tr>`;
   }).join("");
   return `<div class="tbl-title">${title}</div>

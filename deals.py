@@ -47,6 +47,8 @@ _MONTH_END = {
     "dec": (12, 31), "december": (12, 31),
 }
 
+ADJ_UNDETERMINED = "Cannot be determined accurately"
+
 _FETCH_TEXT = """async (u) => {
     try {
       const r = await fetch(u);
@@ -270,7 +272,7 @@ def net_positions(legs):
 
 
 def apply_adjustments(holders, nets, outstanding, mcap):
-    """Mutate holder dicts; return extra rows for unmatched post-SHP buyers."""
+    """Mutate holder dicts; return extra rows for unmatched post-SHP activity."""
     holders = holders or []
     used = set()
     extras = []
@@ -287,7 +289,24 @@ def apply_adjustments(holders, nets, outstanding, mcap):
 
     for h in holders + extras:
         _finish_holder(h, outstanding, mcap)
-    return extras
+    # Tape-only names start at 0 on the SHP. Keep a net buy only if the
+    # implied stake is at least 0.5%. Adj book is unknown, so do not
+    # invent shares / % / Rs cr. Drop net sells. Named holders stay.
+    kept = []
+    for h in extras:
+        bought = _num(h.get("bought"))
+        sold = _num(h.get("sold"))
+        if sold > bought:
+            continue
+        pct = h.get("adj_pct")
+        if not isinstance(pct, (int, float)) or pct < 0.5:
+            continue
+        h["adj_undetermined"] = True
+        h["adj_shares"] = ADJ_UNDETERMINED
+        h["adj_pct"] = ADJ_UNDETERMINED
+        h["adj_holding_cr"] = ADJ_UNDETERMINED
+        kept.append(h)
+    return kept
 
 
 def _new_tape_row(rec, outstanding, mcap):
