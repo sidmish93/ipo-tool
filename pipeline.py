@@ -27,8 +27,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from deals import (fetch_and_adjust, implied_outstanding,
-                   adjust_window, quarter_end as _quarter_end_date)
+from deals import fetch_and_adjust, quarter_end as _quarter_end_date
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
@@ -1177,15 +1176,7 @@ class Pipeline:
                 self._public_rows(bpage, info["scripcode"], qtr["qid"]),
                 mcap)
             if skip_tape or npage is None:
-                start, end = adjust_window(qtr.get("qname"))
-                outstanding = implied_outstanding(
-                    list(promoters) + list(public))
-                meta = {
-                    "quarter_end": qtr.get("as_of"),
-                    "adjust_from": start,
-                    "adjust_to": end,
-                    "shares_outstanding": outstanding,
-                }
+                meta = {"quarter_end": qtr.get("as_of")}
             else:
                 promoters, public, meta = self._with_post_shp(
                     bpage, npage, nse, info["scripcode"], qtr,
@@ -1220,6 +1211,14 @@ class Pipeline:
         terms = names if isinstance(names, (list, tuple)) else split_terms(names)
         if not terms:
             return []
+        if _low_mem():
+            out = []
+            total = len(terms)
+            for i, name in enumerate(terms, 1):
+                self.log(f"[{i}/{total}] {name}", current=i, total=total,
+                         stage="bse")
+                out.append(self._lookup_one_isolated(name, skip_tape=True))
+            return out
         with sync_playwright() as p:
             browser, ctx, _label = _open_session(p)
             try:
