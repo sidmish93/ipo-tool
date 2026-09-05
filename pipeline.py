@@ -72,17 +72,12 @@ def _low_mem():
 def _chrome_args():
     args = list(_BROWSER_ARGS)
     if _low_mem():
-        args.extend(["--renderer-process-limit=1"])
+        args.extend([
+            "--single-process",
+            "--renderer-process-limit=1",
+            "--js-flags=--max-old-space-size=128",
+        ])
     return args
-
-
-def _short_error(exc):
-    text = str(exc).replace("\r", "\n").strip()
-    first = next((ln.strip() for ln in text.splitlines() if ln.strip()),
-                 type(exc).__name__)
-    if len(first) > 240:
-        first = first[:237] + "..."
-    return first
 _STEALTH_JS = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
 
 
@@ -937,35 +932,31 @@ class Pipeline:
     # ----- orchestration -------------------------------------------------- #
     def _lookup_one_isolated(self, name, skip_tape=True):
         """Launch Chrome for one name, then close it (512 MB path)."""
-        try:
-            with sync_playwright() as p:
-                browser, ctx, _label = _open_session(p, probe=False)
+        with sync_playwright() as p:
+            browser, ctx, _label = _open_session(p, probe=False)
+            try:
+                bpage = ctx.new_page()
                 try:
-                    bpage = ctx.new_page()
-                    try:
-                        bpage.goto("https://www.bseindia.com/",
-                                   wait_until="domcontentloaded",
-                                   timeout=60000)
-                        bpage.wait_for_timeout(800)
-                    except Exception as e:
-                        return {"found": False, "query": name,
-                                "error": "Could not open BSE: " + _short_error(e)}
-                    if _bse_blocked(bpage):
-                        return {"found": False, "query": name,
-                                "error": "BSE blocked the browser"}
-                    return self._lookup_on_pages(
-                        bpage, None, name, skip_tape=skip_tape)
-                finally:
-                    try:
-                        ctx.close()
-                    except Exception:
-                        pass
-                    try:
-                        browser.close()
-                    except Exception:
-                        pass
-        except Exception as e:
-            return {"found": False, "query": name, "error": _short_error(e)}
+                    bpage.goto("https://www.bseindia.com/",
+                               wait_until="domcontentloaded", timeout=60000)
+                    bpage.wait_for_timeout(800)
+                except Exception as e:
+                    return {"found": False, "query": name,
+                            "error": f"Could not open BSE: {e}"}
+                if _bse_blocked(bpage):
+                    return {"found": False, "query": name,
+                            "error": "BSE blocked the browser"}
+                return self._lookup_on_pages(
+                    bpage, None, name, skip_tape=skip_tape)
+            finally:
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 
     def _run_low_mem(self, dfrom, dto, out_path, threshold):
         self.log("Low-memory mode: IPO list over HTTP, Chrome opened and "
@@ -985,14 +976,6 @@ class Pipeline:
             err = rec.get("error")
             if err and not rec.get("found"):
                 self.log(f"    {err}", stage="bse")
-                low = err.lower()
-                if i == 1 and any(tok in low for tok in (
-                        "executable", "could not start", "browser has been closed",
-                        "chromium.launch", "host system is missing")):
-                    raise RuntimeError(
-                        "Chrome cannot run on this 512 MB instance. "
-                        "Use this app on your PC (python app.py) or a 2 GB plan."
-                    )
             if not rec.get("found"):
                 self.log("    not found on BSE, skipping", stage="bse")
                 continue
@@ -1327,14 +1310,12 @@ def _write_workbook(companies, out_path, sheet1_title="IPO Companies >3000cr"):
             if c == 10 and isinstance(v, (int, float)):
                 cell.number_format = "#,##0"
         pc = ws.cell(row=r, column=13, value="Promoter & Promoter Group Statement")
-        if comp.get("prom_url"):
-            pc.hyperlink = comp["prom_url"]
+        pc.hyperlink = comp["prom_url"]
         pc.font = link_font
         pc.alignment = left
         pc.border = border
         uc = ws.cell(row=r, column=14, value="Public Shareholder Statement")
-        if comp.get("pub_url"):
-            uc.hyperlink = comp["pub_url"]
+        uc.hyperlink = comp["pub_url"]
         uc.font = link_font
         uc.alignment = left
         uc.border = border
