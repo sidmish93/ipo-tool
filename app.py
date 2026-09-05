@@ -15,7 +15,8 @@ from flask import (Flask, render_template, request, jsonify,
                    send_from_directory, send_file)
 
 from pipeline import (run_pipeline, lookup_company, split_terms,
-                   _write_workbook, MCAP_THRESHOLD, Cancelled)
+                   _write_workbook, MCAP_THRESHOLD, Cancelled,
+                   _short_error)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(BASE, "output")
@@ -144,8 +145,8 @@ def _worker(from_str, to_str, mcap_min):
         _job["cancelled"] = True
         _progress("Cancelled.")
     except Exception as e:
-        _job["error"] = str(e)
-        _progress("ERROR: " + str(e))
+        _job["error"] = _short_error(e)
+        _progress("ERROR: " + _job["error"])
         traceback.print_exc()
     finally:
         _job["finished"] = True
