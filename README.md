@@ -48,4 +48,17 @@ python app.py
 Open <http://127.0.0.1:5000>, choose the dates, and click **Generate Excel**.
 The finished file is saved under `ipo_tool/output/` and offered as a download.
 
+To look up specific listed companies (skipping the SEBI date range), type one
+name or several separated by semicolons:
+
+```
+Delhivery; Lodha Developers; Vedanta
+```
+
+Each result shows live BSE market cap, shares outstanding, and each holder's
+latest-quarter shares / % / rupee holding. After the quarter-end date, NSE and
+BSE block/bulk trades are applied in share counts (sells subtract, buys add);
+adjusted % is adjusted shares ÷ outstanding. A June SHP is as-of 30 June, so
+the trade window is 1 July through today — the same rule for every quarter.
+
 > A full run visits every qualifying company's pages live, so expect a few minutes.

@@ -2,16 +2,15 @@
 IPO shareholding Excel pipeline.
 
 Given a date range, this:
-  1. Scrapes SEBI "Final Offer Documents filed with ROC" for companies in the range.
+  1. Lists mainboard IPOs by listing date from Chittorgarh's timetable.
   2. Looks up each on BSE (scrip code, tickers, ISIN, market cap).
-  3. Keeps companies with Mcap Full > 3000 cr.
+  3. Keeps companies with live Mcap Full above a chosen threshold (default 3000 cr).
   4. Finds the latest shareholding quarter + statement page links.
   5. Extracts detailed promoter and public shareholding.
   6. Writes a two-sheet Excel workbook.
 
-Everything that touches SEBI / BSE / NSE runs inside a real Chromium browser
-(via Playwright) because SEBI blocks plain HTTP POSTs and the public-shareholder
-"bold vs non-bold" distinction only exists in the rendered DOM.
+Exchange pages run inside a real Chrome browser (via Playwright) because
+BSE/NSE block plain HTTP and bundled Chromium.
 """
 
 import os
@@ -24,6 +23,8 @@ from playwright.sync_api import sync_playwright
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+from deals import fetch_and_adjust, quarter_end as _quarter_end_date
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
@@ -205,6 +206,13 @@ def _open_session(playwright):
 
 SEBI_LIST = ("https://www.sebi.gov.in/sebiweb/home/HomeAction.do"
              "?doListing=yes&sid=3&ssid=15&smid=12")
+CHITTOR_HOME = "https://www.chittorgarh.com/"
+# Report 118 (timetable) is the full year list. Report 25 (listing-date)
+# paywalls older years at 5 rows.
+CHITTOR_LIST_API = (
+    "https://webnodejs.chittorgarh.com/cloud/report/data-read/"
+    "118/1/9/{year}/0/0/mainboard/0?search=&v=13-18"
+)
 MCAP_THRESHOLD = 3000.0
 
 
@@ -216,11 +224,60 @@ def _norm(name):
     if not name:
         return ""
     s = name.lower()
+    s = re.sub(r"\band\b", " ", s)
     s = re.sub(r"[^a-z0-9]", "", s)
     for suf in ("privatelimited", "limited", "ltd", "pvt"):
         if s.endswith(suf):
             s = s[: -len(suf)]
     return s
+
+
+_BSE_SKIP_WORDS = {
+    "&", "and", "the", "of", "ltd", "ltd.", "limited", "pvt", "private",
+}
+
+
+def _bse_search_queries(name):
+    """Query strings BSE's search actually answers.
+
+    Their index strips '&' (so 'Larsen & Toubro' is stored as
+    'Larsen  Toubro Ltd') and a full-name search returns nothing. First
+    significant word ('Larsen') and the ticker-like form still hit.
+    """
+    stripped = re.sub(r"\s+(limited|ltd|pvt|private)\.?$", "", name or "",
+                      flags=re.IGNORECASE)
+
+    def significant(text):
+        return [w for w in re.split(r"[\s,/]+", (text or "").strip())
+                if w and w.lower() not in _BSE_SKIP_WORDS]
+
+    raw = []
+    for base in (name, stripped):
+        if not base:
+            continue
+        raw.append(base)
+        raw.append(re.sub(r"\s*&\s*", " ", base))
+        raw.append(re.sub(r"\s+and\s+", " ", base, flags=re.IGNORECASE))
+        words = significant(base)
+        if len(words) >= 3:
+            raw.append(" ".join(words[:3]))
+        if len(words) >= 2:
+            raw.append(" ".join(words[:2]))
+        if words and len(words[0]) >= 3:
+            raw.append(words[0])
+        if re.search(r"\bAMC\b", base or "", re.I):
+            raw.append(re.sub(r"\bAMC\b", "Asset Management", base, flags=re.I))
+        if re.fullmatch(r"LIC", (base or "").strip(), re.I):
+            raw.append("Life Insurance Corporation")
+
+    seen, out = set(), []
+    for q in raw:
+        q = re.sub(r"\s+", " ", q or "").strip(" &")
+        key = q.lower()
+        if q and key not in seen:
+            seen.add(key)
+            out.append(q)
+    return out
 
 
 def _to_float(txt):
@@ -253,6 +310,81 @@ def _display_quarter(qname):
             yr = "20" + yr
         return f"{mon} {yr}"
     return qname
+
+
+def split_terms(text):
+    """Company names as typed: several at a time, separated by semicolons.
+
+    Same rule as sidmish93/blocks_tracker: 'Delhivery; Lodha; Vedanta'.
+    """
+    seen, terms = set(), []
+    for part in (text or "").split(";"):
+        term = part.strip()
+        if term and term.lower() not in seen:
+            seen.add(term.lower())
+            terms.append(term)
+    return terms
+
+
+def _holding_cr(pct, mcap):
+    """Rupee size of a holding in crores: shareholding % × live mcap."""
+    if pct is None or mcap is None:
+        return None
+    try:
+        return round(float(pct) * float(mcap) / 100.0, 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _with_holdings(rows, mcap):
+    out = []
+    for row in rows or []:
+        if isinstance(row, dict):
+            row["holding_cr"] = _holding_cr(row.get("pct"), mcap)
+            out.append(row)
+            continue
+        if not row or len(row) < 3:
+            continue
+        nm, extra, pct = row[0], row[1], row[2]
+        shares = row[3] if len(row) > 4 else None
+        out.append({
+            "name": nm,
+            "category": extra,
+            "pct": pct,
+            "shares": shares,
+            "holding_cr": _holding_cr(pct, mcap),
+            "bought": 0,
+            "sold": 0,
+            "adj_shares": shares,
+            "adj_pct": pct,
+            "adj_holding_cr": _holding_cr(pct, mcap),
+        })
+    return out
+
+
+def _iso(d):
+    if d is None:
+        return ""
+    if hasattr(d, "isoformat"):
+        return d.isoformat()
+    return str(d)
+
+
+def _chittor_listing_date(row):
+    for key in ("~IL_IPO_Listing_date", "~IPO_Listing_date"):
+        raw = str(row.get(key) or "").strip()
+        if raw:
+            try:
+                return datetime.datetime.fromisoformat(raw[:10]).date()
+            except ValueError:
+                pass
+    text = str(row.get("Listing Date") or "").strip()
+    for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def _clean_company(title):
@@ -289,14 +421,75 @@ _SEBI_ROWS_JS = r"""
 # --------------------------------------------------------------------------- #
 # Pipeline
 # --------------------------------------------------------------------------- #
+class Cancelled(Exception):
+    """Raised when the user stops a date-range run."""
+
+
 class Pipeline:
-    def __init__(self, progress_cb=None):
+    def __init__(self, progress_cb=None, cancel_cb=None):
         self.cb = progress_cb or (lambda *a, **k: None)
+        self.cancel_cb = cancel_cb or (lambda: False)
 
     def log(self, msg, current=None, total=None, stage=None):
         self.cb(msg, current=current, total=total, stage=stage)
 
-    # ----- SEBI ----------------------------------------------------------- #
+    def _check_cancel(self):
+        if self.cancel_cb():
+            raise Cancelled("Cancelled.")
+
+    # ----- IPO name list (Chittorgarh listing date) ---------------------- #
+    def _listed_companies(self, page, dfrom, dto):
+        """Mainboard IPOs whose listing date falls in [dfrom, dto].
+
+        Year tabs are by issue year, so a Dec open / Jan listing sits on
+        the previous tab. Fetch year-1 through the end year, then keep
+        rows whose listing date is in range. Skip names with no listing
+        date yet (still in the issue window).
+        """
+        out, seen = [], set()
+        for year in range(dfrom.year - 1, dto.year + 1):
+            self._check_cancel()
+            rows = self._chittor_year(page, year)
+            kept = 0
+            for name, dt in rows:
+                if not (dfrom <= dt <= dto):
+                    continue
+                key = _norm(name)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                out.append((name, dt))
+                kept += 1
+            self.log(f"{year}: {len(rows)} timetable rows, {kept} listed "
+                     f"in range.", stage="list")
+        out.sort(key=lambda x: x[1])
+        return out
+
+    def _chittor_year(self, page, year):
+        """[(name, listing_date), ...] from the mainboard timetable."""
+        try:
+            page.goto(CHITTOR_HOME, wait_until="domcontentloaded",
+                      timeout=45000)
+            page.wait_for_timeout(600)
+        except Exception:
+            pass
+        url = CHITTOR_LIST_API.format(year=year)
+        res = None
+        try:
+            res = page.evaluate(self._FETCH_JS, url)
+        except Exception:
+            res = None
+        rows = []
+        if res and res.get("ok") and isinstance(res.get("json"), dict):
+            raw = res["json"].get("reportTableData") or []
+            for item in raw:
+                name = re.sub(r"<[^>]+>", "", str(item.get("Company") or ""))
+                name = re.sub(r"\s+", " ", name).strip(" .")
+                dt = _chittor_listing_date(item)
+                if name and dt:
+                    rows.append((name, dt))
+        return rows
+
     def _sebi_companies(self, page, dfrom, dto):
         """Return [(name, date)] of prospectuses filed within [dfrom, dto]."""
         page.goto(SEBI_LIST, wait_until="domcontentloaded", timeout=60000)
@@ -411,12 +604,53 @@ class Pipeline:
         return 2
 
     @staticmethod
-    def _name_rank(scripname, target):
+    def _name_rank(scripname, target, shortname="", query_name=""):
         n = _norm(scripname)
+        t = _norm(shortname)
         if n and n == target:
             return 0
-        if n and (n.startswith(target) or target.startswith(n)
-                  or target in n or n in target):
+        if t and t == target:
+            return 0
+
+        q_words = [w.lower() for w in re.split(r"[\s,/&]+", query_name or "")
+                   if w and w.lower() not in _BSE_SKIP_WORDS and len(w) >= 3]
+        s_words = [w.lower() for w in re.split(r"[\s,/&]+",
+                   f"{scripname or ''} {shortname or ''}")
+                   if w and w.lower() not in _BSE_SKIP_WORDS]
+        _TOKEN_EQ = {
+            "amc": {"amc", "asset", "management"},
+        }
+        _SHORT_EXPAND = {
+            "lic": ["life", "insurance", "corporation"],
+        }
+
+        def _hit(qw):
+            aliases = _TOKEN_EQ.get(qw, {qw})
+            return any(
+                aw == sw or (len(aw) >= 4 and (aw in sw or sw in aw))
+                for aw in aliases for sw in s_words
+            )
+
+        # "LIC" is Life Insurance Corporation, not LIC Housing / LIC MF.
+        if len(q_words) == 1 and q_words[0] in _SHORT_EXPAND:
+            q_words = _SHORT_EXPAND[q_words[0]]
+        elif len(q_words) == 1 and len(q_words[0]) < 5:
+            return 2
+
+        missing = [w for w in q_words if not _hit(w)] if q_words else []
+        if missing:
+            return 2
+
+        def _contained(a, b):
+            if not a or not b:
+                return False
+            shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+            # reject "ICICI" ⊂ "ICICIPRUDENTIALAMC" style false hits
+            return shorter in longer and len(shorter) >= 8
+
+        if _contained(n, target) or _contained(t, target):
+            return 1
+        if q_words and s_words and all(_hit(w) for w in q_words):
             return 1
         return 2
 
@@ -430,19 +664,14 @@ class Pipeline:
         So we collect hits across all query variants and pick the best name
         match in the Equity T+1 segment (see _seg_rank / _name_rank).
         """
-        queries = [name, re.sub(r"\s+(limited|ltd)\.?$", "", name,
-                                flags=re.IGNORECASE)]
-        words = name.split()
-        if len(words) >= 3:
-            queries.append(" ".join(words[:3]))
-        if len(words) >= 2:
-            queries.append(" ".join(words[:2]))
+        queries = _bse_search_queries(name)
 
         target = _norm(name)
         seen, cands = set(), []
 
         def rank(r):
-            return (self._name_rank(r.get("scripName", ""), target),
+            return (self._name_rank(r.get("scripName", ""), target,
+                                    r.get("shortName", ""), name),
                     self._seg_rank(r.get("Type", "")))
 
         for q in queries:
@@ -465,7 +694,11 @@ class Pipeline:
                     return self._pack_lookup(best)
 
         if cands:
-            return self._pack_lookup(min(cands, key=rank))
+            best = min(cands, key=rank)
+            nr, sr = rank(best)
+            # Equity only — never fall back to a debt / ETF / T+0 row
+            if nr <= 1 and sr <= 1:
+                return self._pack_lookup(best)
         return None
 
     @staticmethod
@@ -499,7 +732,8 @@ class Pipeline:
         qname = row.get("Fld_qtrname") or ""
         if qid is None:
             return None
-        return {"qid": qid, "qname": qname}
+        return {"qid": qid, "qname": qname,
+                "as_of": _quarter_end_date(qname)}
 
     # ----- NSE ------------------------------------------------------------ #
     def _nse_ticker(self, npage, name, bse_name, fallback):
@@ -552,57 +786,96 @@ class Pipeline:
                 big, blen = k, len(v)
         return (j.get(big) if big else []) or []
 
+    @staticmethod
+    def _share_table(j):
+        """Prefer the SHP table that actually names holders and share counts."""
+        best, n = None, -1
+        for v in (j or {}).values():
+            if (isinstance(v, list) and v and isinstance(v[0], dict)
+                    and "Fld_ShareHolderName" in v[0]):
+                if len(v) > n:
+                    best, n = v, len(v)
+        return best if best is not None else Pipeline._largest_table(j)
+
+    @staticmethod
+    def _shp_holder(x, category):
+        nm = re.sub(r"\s+", " ", (x.get("Fld_ShareHolderName") or "").strip())
+        pct = _to_float(x.get("Fld_TotalPercentageOf_A_B_C2"))
+        shares = _to_float(x.get("Fld_TotalNoOfShares"))
+        if not nm or pct is None or pct <= 0:
+            return None
+        return {
+            "name": nm,
+            "category": category,
+            "pct": pct,
+            "shares": shares,
+            "holding_cr": None,
+            "bought": 0,
+            "sold": 0,
+            "adj_shares": shares,
+            "adj_pct": pct,
+            "adj_holding_cr": None,
+        }
+
     def _promoter_rows(self, bpage, scripcode, qid):
-        """[name, 'Promoter'/'Promoter Group', pct] where pct(% A+B+C2) > 0."""
+        """Named promoter / promoter-group holders with % and share count."""
         url = ("https://api.bseindia.com/BseIndiaAPI/api/"
                f"Corp_shpPromoterNGroup_ng/w?SCRIPCODE={scripcode}"
                f"&QtrCode={float(qid):.2f}")
         res = self._bse_fetch(bpage, url)
         out = []
         if res.get("ok"):
-            for x in self._largest_table(res["json"]):
+            for x in self._share_table(res["json"]):
                 ty = (x.get("FLd_ShareholderType") or "").strip()
                 if ty not in ("Promoter", "Promoter Group"):
                     continue
-                pct = _to_float(x.get("Fld_TotalPercentageOf_A_B_C2"))
-                if pct is None or pct <= 0:
-                    continue
-                nm = re.sub(r"\s+", " ", (x.get("Fld_ShareHolderName") or "").strip())
-                out.append([nm, ty, pct])
+                row = self._shp_holder(x, ty)
+                if row:
+                    out.append(row)
         return out
 
     def _public_rows(self, bpage, scripcode, qid):
-        """[name, bold-heading, pct] for every non-bold public holder, pct > 0."""
+        """Named public holders with % and share count."""
         url = ("https://api.bseindia.com/BseIndiaAPI/api/"
                f"Corp_shpSec_SHPPubShold_ng/w?SCRIPCODE={scripcode}"
                f"&QtrCode={float(qid):.2f}")
         res = self._bse_fetch(bpage, url)
         out = []
         if res.get("ok"):
-            for x in self._largest_table(res["json"]):
-                nm = re.sub(r"\s+", " ", (x.get("Fld_ShareHolderName") or "").strip())
-                if not nm:
-                    continue
-                pct = _to_float(x.get("Fld_TotalPercentageOf_A_B_C2"))
-                if pct is None or pct <= 0:
-                    continue
+            for x in self._share_table(res["json"]):
                 heading = (x.get("Fld_Level") or x.get("Fld_SubCategory") or "").strip()
                 heading = re.sub(r"/+\s*$", "", heading).strip()
-                out.append([nm, heading, pct])
+                row = self._shp_holder(x, heading)
+                if row:
+                    out.append(row)
         return out
 
+    def _with_post_shp(self, bpage, npage, nse, scripcode, qtr, promoters,
+                       public, mcap):
+        holders = list(promoters) + list(public)
+        _, extras, meta = fetch_and_adjust(
+            bpage, npage, nse, scripcode, qtr.get("qname"), holders, mcap)
+        if extras:
+            public = list(public) + extras
+        return promoters, public, meta
+
     # ----- orchestration -------------------------------------------------- #
-    def run(self, dfrom, dto, out_path):
+    def run(self, dfrom, dto, out_path, mcap_min=None):
+        threshold = MCAP_THRESHOLD if mcap_min is None else float(mcap_min)
+        qualified = []
         with sync_playwright() as p:
+            self._check_cancel()
             browser, ctx, label = _open_session(p)
-            self.log(f"Browser: {label}", stage="sebi")
+            self.log(f"Browser: {label}", stage="list")
             try:
-                sebi_page = ctx.new_page()
-                self.log("Fetching SEBI final offer documents...", stage="sebi")
-                companies = self._sebi_companies(sebi_page, dfrom, dto)
-                self.log(f"Found {len(companies)} companies filed with ROC in range.",
-                         stage="sebi")
-                sebi_page.close()
+                list_page = ctx.new_page()
+                self.log("Fetching mainboard IPOs by listing date "
+                         "(Chittorgarh)...", stage="list")
+                companies = self._listed_companies(list_page, dfrom, dto)
+                self.log(f"Found {len(companies)} listed IPOs in range.",
+                         stage="list")
+                list_page.close()
+                self._check_cancel()
 
                 bpage = ctx.new_page()
                 bpage.goto("https://www.bseindia.com/", wait_until="domcontentloaded")
@@ -621,9 +894,11 @@ class Pipeline:
                 except Exception:
                     pass
 
-                qualified = []
+                self.log(f"Keeping companies with mcap > {threshold:.0f} cr.",
+                         stage="bse")
                 total = len(companies)
                 for i, (name, dt) in enumerate(companies, 1):
+                    self._check_cancel()
                     self.log(f"[{i}/{total}] {name}", current=i, total=total,
                              stage="bse")
                     info = self._bse_lookup(bpage, name)
@@ -631,8 +906,8 @@ class Pipeline:
                         self.log(f"    not found on BSE, skipping", stage="bse")
                         continue
                     mcap = self._bse_mcap(bpage, info["scripcode"])
-                    if mcap is None or mcap <= MCAP_THRESHOLD:
-                        self.log(f"    Mcap {mcap} <= {MCAP_THRESHOLD:.0f}cr, skipping",
+                    if mcap is None or mcap <= threshold:
+                        self.log(f"    Mcap {mcap} <= {threshold:.0f}cr, skipping",
                                  stage="bse")
                         continue
                     qtr = self._bse_quarter(bpage, info["scripcode"])
@@ -643,10 +918,15 @@ class Pipeline:
                                            info["ticker"])
                     prom_url, pub_url = self._stmt_urls(
                         info["scripcode"], qtr["qid"], qtr["qname"])
-                    promoters = self._promoter_rows(
-                        bpage, info["scripcode"], qtr["qid"])
-                    public = self._public_rows(
-                        bpage, info["scripcode"], qtr["qid"])
+                    promoters = _with_holdings(
+                        self._promoter_rows(bpage, info["scripcode"], qtr["qid"]),
+                        mcap)
+                    public = _with_holdings(
+                        self._public_rows(bpage, info["scripcode"], qtr["qid"]),
+                        mcap)
+                    promoters, public, meta = self._with_post_shp(
+                        bpage, npage, nse, info["scripcode"], qtr,
+                        promoters, public, mcap)
                     qualified.append({
                         "name": name,
                         "bse_ticker": info["ticker"],
@@ -655,6 +935,10 @@ class Pipeline:
                         "isin": info["isin"],
                         "mcap": mcap,
                         "quarter": _display_quarter(qtr["qname"]),
+                        "quarter_end": _iso(meta.get("quarter_end") or qtr.get("as_of")),
+                        "adjust_from": _iso(meta.get("adjust_from")),
+                        "adjust_to": _iso(meta.get("adjust_to")),
+                        "shares_outstanding": meta.get("shares_outstanding"),
                         "prom_url": prom_url,
                         "pub_url": pub_url,
                         "promoters": promoters,
@@ -668,21 +952,82 @@ class Pipeline:
                 bpage.close()
                 npage.close()
             finally:
-                ctx.close()
-                browser.close()
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 
         self.log("Writing Excel workbook...", stage="excel")
-        _write_workbook(qualified, out_path)
+        cut = int(threshold) if threshold == int(threshold) else threshold
+        _write_workbook(qualified, out_path,
+                        sheet1_title=f"IPO Companies >{cut}cr")
         self.log(f"Done. {len(qualified)} companies written.", stage="done")
         return qualified
 
-    # ----- single-company lookup (interactive search) -------------------- #
-    def lookup_one(self, name):
-        """Look up one company by name and return its full shareholding detail.
+    # ----- interactive search (one or many names, semicolon-separated) --- #
+    def _lookup_on_pages(self, bpage, npage, name):
+        """Resolve one name against pages already opened on BSE / NSE."""
+        info = self._bse_lookup(bpage, name)
+        if not info or not info["scripcode"]:
+            return {"found": False, "query": name}
 
-        Unlike run(), there is no market-cap filter here — it returns whatever
-        the company is, so it works for interactive search of any listed name.
+        mcap = self._bse_mcap(bpage, info["scripcode"])
+        qtr = self._bse_quarter(bpage, info["scripcode"])
+        try:
+            nse = self._nse_ticker(npage, info["bse_name"],
+                                   info["bse_name"], info["ticker"])
+        except Exception:
+            nse = info["ticker"]
+
+        promoters, public, prom_url, pub_url, quarter = [], [], "", "", ""
+        meta = {}
+        if qtr:
+            quarter = _display_quarter(qtr["qname"])
+            prom_url, pub_url = self._stmt_urls(
+                info["scripcode"], qtr["qid"], qtr["qname"])
+            promoters = _with_holdings(
+                self._promoter_rows(bpage, info["scripcode"], qtr["qid"]),
+                mcap)
+            public = _with_holdings(
+                self._public_rows(bpage, info["scripcode"], qtr["qid"]),
+                mcap)
+            promoters, public, meta = self._with_post_shp(
+                bpage, npage, nse, info["scripcode"], qtr,
+                promoters, public, mcap)
+
+        return {
+            "found": True,
+            "query": name,
+            "name": info["bse_name"],
+            "bse_ticker": info["ticker"],
+            "scripcode": info["scripcode"],
+            "nse_ticker": nse,
+            "isin": info["isin"],
+            "mcap": mcap,
+            "quarter": quarter,
+            "quarter_end": _iso(meta.get("quarter_end") or (qtr.get("as_of") if qtr else None)),
+            "adjust_from": _iso(meta.get("adjust_from")),
+            "adjust_to": _iso(meta.get("adjust_to")),
+            "shares_outstanding": meta.get("shares_outstanding"),
+            "prom_url": prom_url,
+            "pub_url": pub_url,
+            "promoters": promoters,
+            "public": public,
+        }
+
+    def lookup_many(self, names):
+        """Look up one or more companies in a single browser session.
+
+        `names` is a string (`A; B; C`) or a list of terms. No market-cap
+        filter — same as the interactive search.
         """
+        terms = names if isinstance(names, (list, tuple)) else split_terms(names)
+        if not terms:
+            return []
         with sync_playwright() as p:
             browser, ctx, _label = _open_session(p)
             try:
@@ -695,68 +1040,68 @@ class Pipeline:
                         "BSE blocked the browser after launch. "
                         "Close other Chrome windows and try again."
                     )
-
-                info = self._bse_lookup(bpage, name)
-                if not info or not info["scripcode"]:
-                    return {"found": False, "query": name}
-
-                mcap = self._bse_mcap(bpage, info["scripcode"])
-                qtr = self._bse_quarter(bpage, info["scripcode"])
-
                 npage = ctx.new_page()
                 try:
                     npage.goto("https://www.nseindia.com/",
                                wait_until="domcontentloaded")
                     npage.wait_for_timeout(1200)
-                    nse = self._nse_ticker(npage, info["bse_name"],
-                                           info["bse_name"], info["ticker"])
                 except Exception:
-                    nse = info["ticker"]
-                finally:
-                    npage.close()
-
-                promoters, public, prom_url, pub_url, quarter = [], [], "", "", ""
-                if qtr:
-                    quarter = _display_quarter(qtr["qname"])
-                    prom_url, pub_url = self._stmt_urls(
-                        info["scripcode"], qtr["qid"], qtr["qname"])
-                    promoters = self._promoter_rows(
-                        bpage, info["scripcode"], qtr["qid"])
-                    public = self._public_rows(
-                        bpage, info["scripcode"], qtr["qid"])
-
-                return {
-                    "found": True,
-                    "query": name,
-                    "name": info["bse_name"],
-                    "bse_ticker": info["ticker"],
-                    "scripcode": info["scripcode"],
-                    "nse_ticker": nse,
-                    "isin": info["isin"],
-                    "mcap": mcap,
-                    "quarter": quarter,
-                    "prom_url": prom_url,
-                    "pub_url": pub_url,
-                    "promoters": promoters,
-                    "public": public,
-                }
+                    pass
+                out = []
+                total = len(terms)
+                for i, name in enumerate(terms, 1):
+                    self.log(f"[{i}/{total}] {name}", current=i, total=total,
+                             stage="bse")
+                    out.append(self._lookup_on_pages(bpage, npage, name))
+                    bpage.wait_for_timeout(150)
+                npage.close()
+                bpage.close()
+                return out
             finally:
                 ctx.close()
                 browser.close()
+
+    def lookup_one(self, name):
+        """Look up one company by name and return its full shareholding detail."""
+        rows = self.lookup_many([name] if name else [])
+        return rows[0] if rows else {"found": False, "query": name}
+
+
+def _holder_view(row, mcap=None):
+    """Normalise a holder row (dict or old list) for Excel / JSON."""
+    if isinstance(row, dict):
+        h = dict(row)
+    else:
+        h = {
+            "name": row[0] if row else "",
+            "category": row[1] if row and len(row) > 1 else "",
+            "pct": row[2] if row and len(row) > 2 else None,
+            "holding_cr": row[3] if row and len(row) > 3 else None,
+            "shares": row[4] if row and len(row) > 4 else None,
+        }
+    if h.get("holding_cr") is None:
+        h["holding_cr"] = _holding_cr(h.get("pct"), mcap)
+    if h.get("adj_holding_cr") is None:
+        h["adj_holding_cr"] = _holding_cr(h.get("adj_pct"), mcap)
+    for k in ("bought", "sold"):
+        h.setdefault(k, 0)
+    return h
 
 
 # --------------------------------------------------------------------------- #
 # Excel writer
 # --------------------------------------------------------------------------- #
-def _write_workbook(companies, out_path):
+def _write_workbook(companies, out_path, sheet1_title="IPO Companies >3000cr"):
     wb = Workbook()
 
     # ---- Sheet 1 ---- #
     ws = wb.active
-    ws.title = "IPO Companies >3000cr"
+    ws.title = sheet1_title[:31] or "Companies"
     headers = ["S.No", "Company Name", "BSE Ticker", "BSE Scrip Code",
-               "NSE Ticker", "ISIN", "Mcap Full (Cr.)",
-               "Latest Shareholding Quarter",
+               "NSE Ticker", "ISIN", "Live Mcap (Cr.)",
+               "Latest Shareholding Quarter", "SHP as-of",
+               "Shares Outstanding",
+               "Adjusted from", "Adjusted to",
                "Promoter & Promoter Group Shareholding (link)",
                "Public Shareholder Shareholding (link)"]
     header_fill = PatternFill("solid", fgColor="1F4E78")
@@ -777,36 +1122,44 @@ def _write_workbook(companies, out_path):
     for i, comp in enumerate(companies, 1):
         r = i + 1
         vals = [i, comp["name"], comp["bse_ticker"], comp["scripcode"],
-                comp["nse_ticker"], comp["isin"], comp["mcap"], comp["quarter"]]
+                comp["nse_ticker"], comp["isin"], comp["mcap"], comp["quarter"],
+                comp.get("quarter_end") or "",
+                comp.get("shares_outstanding"),
+                comp.get("adjust_from") or "",
+                comp.get("adjust_to") or ""]
         for c, v in enumerate(vals, 1):
             cell = ws.cell(row=r, column=c, value=v)
             cell.border = border
             cell.alignment = left if c == 2 else center
             if c == 7 and isinstance(v, (int, float)):
                 cell.number_format = "#,##0.00"
-        pc = ws.cell(row=r, column=9, value="Promoter & Promoter Group Statement")
+            if c == 10 and isinstance(v, (int, float)):
+                cell.number_format = "#,##0"
+        pc = ws.cell(row=r, column=13, value="Promoter & Promoter Group Statement")
         pc.hyperlink = comp["prom_url"]
         pc.font = link_font
         pc.alignment = left
         pc.border = border
-        uc = ws.cell(row=r, column=10, value="Public Shareholder Statement")
+        uc = ws.cell(row=r, column=14, value="Public Shareholder Statement")
         uc.hyperlink = comp["pub_url"]
         uc.font = link_font
         uc.alignment = left
         uc.border = border
 
-    widths = [6, 42, 14, 12, 14, 16, 16, 16, 40, 36]
+    widths = [6, 42, 14, 12, 14, 16, 16, 16, 14, 18, 14, 14, 40, 36]
     for c, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(c)].width = w
     ws.freeze_panes = "A2"
     if companies:
-        ws.auto_filter.ref = f"A1:J{len(companies) + 1}"
+        ws.auto_filter.ref = f"A1:N{len(companies) + 1}"
 
     # ---- Sheet 2 ---- #
     ws2 = wb.create_sheet("Detailed Shareholding")
     h2 = ["Company Name", "Statement", "Category / Name of Shareholder",
           "Promoter Type / Public Heading",
-          "Shareholding % as per SCRR,1957 (% of A+B+C2)"]
+          "Shares (SHP)", "Shareholding % (A+B+C2)", "Holding (Rs Cr.)",
+          "Bought after SHP", "Sold after SHP",
+          "Adj. shares", "Adj. %", "Adj. holding (Rs Cr.)"]
     prom_fill = PatternFill("solid", fgColor="E2EFDA")
     pub_fill = PatternFill("solid", fgColor="FCE4D6")
     comp_font = Font(bold=True, size=11, color="1F4E78")
@@ -823,7 +1176,11 @@ def _write_workbook(companies, out_path):
             cell.alignment = al
             cell.fill = fill
             cell.border = border
-            if c == 5 and isinstance(v, (int, float)):
+            if c in (5, 8, 9, 10) and isinstance(v, (int, float)):
+                cell.number_format = "#,##0"
+            if c in (7, 12) and isinstance(v, (int, float)):
+                cell.number_format = "#,##0.00"
+            if c in (6, 11) and isinstance(v, (int, float)):
                 cell.number_format = "0.00"
 
     r = 2
@@ -831,48 +1188,67 @@ def _write_workbook(companies, out_path):
         start = r
         prom = comp.get("promoters") or []
         pub = comp.get("public") or []
+        def pack(statement, row, aligns):
+            h = _holder_view(row, comp.get("mcap"))
+            return (
+                [comp["name"], statement, h["name"], h["category"],
+                 h["shares"], h["pct"], h["holding_cr"],
+                 h["bought"], h["sold"],
+                 h["adj_shares"], h["adj_pct"], h["adj_holding_cr"]],
+                aligns,
+            )
+
         if prom:
-            for nm, ty, pct in prom:
-                wrow(r, prom_fill,
-                     [comp["name"], "Promoter & Promoter Group", nm, ty, pct],
-                     [left, left, left, center, center])
+            for row in prom:
+                vals, al = pack("Promoter & Promoter Group", row,
+                                [left, left, left, center, center, center,
+                                 center, center, center, center, center, center])
+                wrow(r, prom_fill, vals, al)
                 r += 1
         else:
             wrow(r, prom_fill,
                  [comp["name"], "Promoter & Promoter Group",
                   "No promoter / promoter group with shareholding > 0%",
-                  "-", "-"], [left, left, left, center, center])
+                  "-", "-", "-", "-", "-", "-", "-", "-", "-"],
+                 [left, left, left, center, center, center,
+                  center, center, center, center, center, center])
             r += 1
         if pub:
-            for nm, hd, pct in pub:
-                wrow(r, pub_fill,
-                     [comp["name"], "Public Shareholder", nm, hd, pct],
-                     [left, left, left, left, center])
+            for row in pub:
+                vals, al = pack("Public Shareholder", row,
+                                [left, left, left, left, center, center,
+                                 center, center, center, center, center, center])
+                wrow(r, pub_fill, vals, al)
                 r += 1
         else:
             wrow(r, pub_fill,
                  [comp["name"], "Public Shareholder",
                   "No named (non-bold) public shareholder with shareholding > 0%",
-                  "-", "-"], [left, left, left, center, center])
+                  "-", "-", "-", "-", "-", "-", "-", "-", "-"],
+                 [left, left, left, center, center, center,
+                  center, center, center, center, center, center])
             r += 1
         ws2.cell(row=start, column=1).font = comp_font
 
-    for c, w in enumerate([40, 26, 52, 40, 22], 1):
+    for c, w in enumerate([40, 26, 52, 40, 16, 14, 16, 16, 16, 16, 12, 18], 1):
         ws2.column_dimensions[get_column_letter(c)].width = w
     ws2.freeze_panes = "A2"
     if r > 2:
-        ws2.auto_filter.ref = f"A1:E{r - 1}"
+        ws2.auto_filter.ref = f"A1:L{r - 1}"
 
     wb.save(out_path)
 
 
-def run_pipeline(from_str, to_str, out_path, progress_cb=None):
+def run_pipeline(from_str, to_str, out_path, progress_cb=None, mcap_min=None,
+                 cancel_cb=None):
     """from_str / to_str are 'YYYY-MM-DD' (HTML date input format)."""
     dfrom = datetime.datetime.strptime(from_str, "%Y-%m-%d").date()
     dto = datetime.datetime.strptime(to_str, "%Y-%m-%d").date()
-    return Pipeline(progress_cb).run(dfrom, dto, out_path)
+    return Pipeline(progress_cb, cancel_cb).run(
+        dfrom, dto, out_path, mcap_min=mcap_min)
 
 
 def lookup_company(name):
-    """Interactive single-company lookup; returns a JSON-serialisable dict."""
-    return Pipeline().lookup_one(name)
+    """Interactive lookup. `name` may be several companies separated by ';'."""
+    terms = split_terms(name)
+    return Pipeline().lookup_many(terms)

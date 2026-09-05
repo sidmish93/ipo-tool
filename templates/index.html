@@ -16,9 +16,10 @@
     background:linear-gradient(135deg,#0f172a,#111827); color:var(--text);
     min-height:100vh; display:flex; justify-content:center; padding:32px 16px;
   }
-  .wrap{width:100%; max-width:860px}
-  h1{font-size:26px; margin:0 0 4px}
-  .sub{color:var(--muted); margin:0 0 24px; font-size:14px}
+  .wrap{width:100%; max-width:1180px}
+  .co-block + .co-block{margin-top:28px; padding-top:22px; border-top:1px solid var(--line)}
+  .miss{color:var(--err); font-size:14px; margin:8px 0 16px}
+  h1{font-size:26px; margin:0 0 20px}
   .card{
     background:var(--card); border:1px solid var(--line); border-radius:16px;
     padding:24px; box-shadow:0 10px 40px rgba(0,0,0,.35); margin-bottom:20px;
@@ -26,11 +27,12 @@
   .row{display:flex; gap:18px; flex-wrap:wrap}
   .field{flex:1; min-width:200px}
   label{display:block; font-size:13px; color:var(--muted); margin-bottom:6px}
-  input[type=date],input[type=text]{
+  input[type=date],input[type=text],input[type=number]{
     width:100%; padding:12px 14px; border-radius:10px; border:1px solid var(--line);
     background:#0b1220; color:var(--text); font-size:15px; color-scheme:dark;
   }
-  input[type=date]:focus,input[type=text]:focus{outline:none; border-color:var(--accent)}
+  input[type=date]:focus,input[type=text]:focus,input[type=number]:focus{
+    outline:none; border-color:var(--accent)}
   .actions{margin-top:22px; display:flex; align-items:center; gap:16px; flex-wrap:wrap}
   button{
     background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#04121c;
@@ -39,12 +41,19 @@
   }
   button:hover{transform:translateY(-1px)}
   button:disabled{opacity:.5; cursor:not-allowed; transform:none}
+  button.btn-ok{background:var(--ok); color:#04121c}
+  button.btn-cancel{
+    background:transparent; color:var(--err); border:1px solid var(--err);
+    padding:8px 16px; font-size:13px;
+  }
+  .stage-row{display:flex; align-items:center; justify-content:space-between;
+    gap:12px; margin:0 0 8px}
   .hint{color:var(--muted); font-size:12.5px}
   .progress-wrap{display:none}
   .bar{height:10px; background:#0b1220; border-radius:999px; overflow:hidden; border:1px solid var(--line)}
   .bar > i{display:block; height:100%; width:0%;
     background:linear-gradient(90deg,var(--accent),var(--accent2)); transition:width .4s}
-  .stage{margin:14px 0 8px; font-size:14px; color:var(--text)}
+  .stage{margin:0; font-size:14px; color:var(--text)}
   .stage b{color:var(--accent)}
   .log{
     background:#070d17; border:1px solid var(--line); border-radius:10px; padding:12px 14px;
@@ -57,9 +66,7 @@
     display:inline-block; margin-top:12px; background:var(--ok); color:#04121c;
     padding:12px 22px; border-radius:10px; font-weight:700; text-decoration:none;
   }
-  .steps{font-size:12.5px; color:var(--muted); margin-top:10px; line-height:1.7}
-  .steps code{background:#0b1220; padding:1px 6px; border-radius:6px; color:#cbd5e1}
-  h2{font-size:19px; margin:0 0 4px}
+  h2{font-size:19px; margin:0 0 16px}
   .spinner{display:inline-block; width:15px; height:15px; border:2px solid var(--line);
     border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite;
     vertical-align:-2px; margin-right:8px}
@@ -85,9 +92,6 @@
 <body>
   <div class="wrap">
     <h1>IPO Shareholding Excel Generator</h1>
-    <p class="sub">Pick a date range for SEBI "Final Offer Documents filed with ROC".
-      The tool finds IPO companies with market cap &gt; 3000 cr and builds a two-sheet Excel
-      (company list + detailed promoter / public shareholding).</p>
 
     <div class="card">
       <div class="row">
@@ -101,40 +105,39 @@
         </div>
       </div>
       <div class="actions">
+        <div class="field" style="flex:0 0 180px; margin:0">
+          <label for="mcap">Min mcap (Rs cr)</label>
+          <input type="number" id="mcap" min="0" step="100" value="3000">
+        </div>
         <button id="go">Generate Excel</button>
-        <span class="hint">Takes a few minutes — it visits SEBI, BSE and NSE live.</span>
-      </div>
-      <div class="steps">
-        Sheet 1: S.No, Company, BSE/NSE ticker, ISIN, Mcap, latest quarter, statement links.<br>
-        Sheet 2: promoters / promoter-group and every non-bold public shareholder (with &gt; 0% holding).
+        <span class="hint">Takes a few minutes.</span>
       </div>
     </div>
 
     <div class="card">
-      <h2>Look up a single company</h2>
-      <p class="sub" style="margin:0 0 16px">Search any listed company by name to see its
-        latest shareholding pattern (same columns as the Excel) right here.</p>
+      <h2>Look up companies</h2>
       <div class="row">
         <div class="field" style="flex:3">
-          <label for="q">Company name</label>
-          <input type="text" id="q" placeholder="e.g. Delhivery Limited"
+          <label for="q">Company name(s)</label>
+          <input type="text" id="q"
+                 placeholder="e.g. Delhivery; Lodha Developers; Vedanta"
                  autocomplete="off">
         </div>
-        <div class="field" style="flex:0 0 auto; display:flex; align-items:flex-end">
+        <div class="field" style="flex:0 0 auto; display:flex; align-items:flex-end; gap:10px">
           <button id="search">Search</button>
+          <button id="dlLookup" class="btn-ok" type="button">Download Excel</button>
         </div>
       </div>
       <div class="hint" id="lookStatus" style="margin-top:14px"></div>
     </div>
 
-    <div class="card" id="lookCard" style="display:none">
-      <div id="summary"></div>
-      <div id="promWrap"></div>
-      <div id="pubWrap"></div>
-    </div>
+    <div class="card" id="lookCard" style="display:none"></div>
 
     <div class="card progress-wrap" id="pw">
-      <div class="stage" id="stage">Starting…</div>
+      <div class="stage-row">
+        <div class="stage" id="stage">Starting…</div>
+        <button type="button" id="cancel" class="btn-cancel" style="display:none">Cancel</button>
+      </div>
       <div class="bar"><i id="barfill"></i></div>
       <div class="log" id="log"></div>
       <div class="result" id="result"></div>
@@ -145,34 +148,107 @@
 <script>
 const $ = s => document.querySelector(s);
 let poll = null;
+let followJob = false;
 
-$("#go").addEventListener("click", async () => {
-  const from = $("#from").value, to = $("#to").value;
-  if(!from || !to){ alert("Please choose both dates."); return; }
-  $("#go").disabled = true;
+function showProgress(){
   $("#pw").style.display = "block";
+  $("#result").style.display = "none";
+  $("#dl").style.display = "none";
+}
+
+function hideProgress(){
+  $("#pw").style.display = "none";
   $("#log").textContent = "";
   $("#result").style.display = "none";
   $("#dl").style.display = "none";
+  $("#barfill").style.width = "0%";
+  $("#stage").innerHTML = "Starting…";
+  $("#cancel").style.display = "none";
+  $("#cancel").textContent = "Cancel";
+  $("#go").disabled = false;
+}
+
+function watchJob(){
+  followJob = true;
+  if(poll) clearInterval(poll);
+  refresh();
+  poll = setInterval(refresh, 1200);
+}
+
+$("#go").addEventListener("click", async () => {
+  const from = $("#from").value, to = $("#to").value;
+  const mcapRaw = $("#mcap").value;
+  const mcap_min = mcapRaw === "" ? 3000 : Number(mcapRaw);
+  if(!from || !to){ alert("Please choose both dates."); return; }
+  if(!Number.isFinite(mcap_min) || mcap_min < 0){
+    alert("Market-cap threshold must be 0 or more."); return;
+  }
+  $("#go").disabled = true;
+  showProgress();
   $("#stage").innerHTML = "Starting…";
   $("#barfill").style.width = "0%";
+  $("#cancel").textContent = "Cancel";
 
   const r = await fetch("/start", {
     method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({from, to})
+    body: JSON.stringify({from, to, mcap_min})
   });
   const j = await r.json();
-  if(!r.ok){ alert(j.error || "Failed to start"); $("#go").disabled = false; return; }
-  poll = setInterval(refresh, 1200);
+  if(!r.ok){
+    if(r.status === 409){
+      $("#stage").innerHTML = "A run is already in progress…";
+      watchJob();
+      return;
+    }
+    alert(j.error || "Failed to start");
+    $("#go").disabled = false;
+    return;
+  }
+  $("#log").textContent = "";
+  $("#cancel").style.display = "inline-block";
+  $("#cancel").disabled = false;
+  watchJob();
 });
+
+$("#cancel").addEventListener("click", async () => {
+  $("#cancel").disabled = true;
+  $("#cancel").textContent = "Stopping…";
+  try{
+    await fetch("/cancel", {method:"POST"});
+  }catch(e){
+    $("#cancel").disabled = false;
+    $("#cancel").textContent = "Cancel";
+  }
+});
+
+(async () => {
+  try{
+    const s = await (await fetch("/status")).json();
+    if(s.running) watchJob();
+    else hideProgress();
+  }catch(e){}
+})();
 
 async function refresh(){
   const r = await fetch("/status");
   const s = await r.json();
+  if(s.running) followJob = true;
+  const hasJob = followJob && !!(s.running || s.finished || (s.log && s.log.length));
+  if(!hasJob){
+    if(poll){ clearInterval(poll); poll = null; }
+    hideProgress();
+    return;
+  }
+  $("#pw").style.display = "block";
+  $("#go").disabled = !!s.running;
+  $("#cancel").style.display = s.running ? "inline-block" : "none";
+  $("#cancel").disabled = !s.running;
   $("#log").textContent = (s.log || []).join("\n");
   $("#log").scrollTop = $("#log").scrollHeight;
 
-  const stageNames = {sebi:"Reading SEBI filings", bse:"Filtering on BSE (mcap > 3000cr)",
+  const cut = (s.mcap_min == null || s.mcap_min === "") ? 3000 : s.mcap_min;
+  const stageNames = {list:"Reading IPO listings", sebi:"Reading SEBI filings",
+    bse:`Filtering on BSE (mcap > ${cut}cr)`,
     detail:"Extracting detailed shareholding", excel:"Writing Excel", done:"Done"};
   let stage = stageNames[s.stage] || "Working";
   if(s.total){
@@ -183,13 +259,19 @@ async function refresh(){
   }
 
   if(s.finished){
-    clearInterval(poll);
+    if(poll){ clearInterval(poll); poll = null; }
     $("#go").disabled = false;
-    if(s.error){
+    $("#cancel").style.display = "none";
+    $("#cancel").textContent = "Cancel";
+    if(s.cancelled){
+      $("#result").className = "result err";
+      $("#result").textContent = "Cancelled.";
+      $("#result").style.display = "block";
+    } else if(s.error){
       $("#result").className = "result err";
       $("#result").textContent = "Failed: " + s.error;
       $("#result").style.display = "block";
-    } else {
+    } else if(s.file){
       $("#barfill").style.width = "100%";
       $("#stage").innerHTML = "<b>Done</b>";
       $("#result").className = "result ok";
@@ -204,14 +286,24 @@ async function refresh(){
 /* ---------------- single-company lookup ---------------- */
 const esc = t => (t == null ? "" : String(t)).replace(/[&<>"]/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const fmtPct = v => (v == null || v === "") ? "" : Number(v).toFixed(2) + "%";
+const fmtPct = v => (v == null || v === "") ? "—" : Number(v).toFixed(2) + "%";
+const fmtCr = v => (v == null || v === "") ? "—"
+  : Number(v).toLocaleString("en-IN", {maximumFractionDigits:2});
+const fmtSh = v => (v == null || v === "") ? "—"
+  : Math.round(Number(v)).toLocaleString("en-IN");
 
 async function doSearch(){
   const q = $("#q").value.trim();
   if(!q){ $("#lookStatus").textContent = "Please enter a company name."; return; }
+  const n = q.split(";").map(s => s.trim()).filter(Boolean).length;
   $("#search").disabled = true;
+  $("#dlLookup").disabled = true;
   $("#lookCard").style.display = "none";
-  $("#lookStatus").innerHTML = `<span class="spinner"></span>Searching BSE / NSE for “${esc(q)}” — this takes ~15-30s…`;
+  $("#lookCard").innerHTML = "";
+  const wait = n > 1
+    ? `Searching BSE / NSE for ${n} companies — about ${n * 20}s…`
+    : `Searching BSE / NSE for “${esc(q)}” — this takes ~15-30s…`;
+  $("#lookStatus").innerHTML = `<span class="spinner"></span>${wait}`;
   try{
     const r = await fetch("/company", {
       method:"POST", headers:{"Content-Type":"application/json"},
@@ -219,17 +311,60 @@ async function doSearch(){
     });
     const d = await r.json();
     if(!r.ok){ $("#lookStatus").textContent = d.error || "Lookup failed."; return; }
-    if(!d.found){
-      $("#lookStatus").textContent = `No BSE match found for “${q}”.`;
+    const rows = d.results || [];
+    if(!rows.length){
+      $("#lookStatus").textContent = "No companies to look up.";
       return;
     }
-    $("#lookStatus").textContent = "";
-    renderCompany(d);
+    const missing = d.missing || [];
+    const found = d.found_count || 0;
+    $("#lookStatus").textContent = missing.length
+      ? `Found ${found} of ${rows.length}. No BSE match for: ${missing.join("; ")}`
+      : (found > 1 ? `Found ${found} companies.` : "");
+    $("#lookCard").innerHTML = rows.map(renderCompanyBlock).join("");
     $("#lookCard").style.display = "block";
   }catch(e){
     $("#lookStatus").textContent = "Lookup failed: " + e;
   }finally{
     $("#search").disabled = false;
+    $("#dlLookup").disabled = false;
+  }
+}
+
+async function doDownloadExcel(){
+  const q = $("#q").value.trim();
+  if(!q){ $("#lookStatus").textContent = "Please enter a company name."; return; }
+  const n = q.split(";").map(s => s.trim()).filter(Boolean).length;
+  $("#search").disabled = true;
+  $("#dlLookup").disabled = true;
+  $("#lookStatus").innerHTML = `<span class="spinner"></span>Preparing Excel for ${n} compan${n===1?"y":"ies"}…`;
+  try{
+    const r = await fetch("/company.xlsx", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({q})
+    });
+    if(!r.ok){
+      let msg = "Excel download failed.";
+      try { const d = await r.json(); msg = d.error || msg; } catch(e){}
+      $("#lookStatus").textContent = msg;
+      return;
+    }
+    const blob = await r.blob();
+    const match = (r.headers.get("Content-Disposition") || "").match(/filename="?([^"]+)"?/);
+    const name = match ? match[1] : "Shareholding.xlsx";
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    $("#lookStatus").textContent = "Excel downloaded.";
+  }catch(e){
+    $("#lookStatus").textContent = "Excel download failed: " + e;
+  }finally{
+    $("#search").disabled = false;
+    $("#dlLookup").disabled = false;
   }
 }
 
@@ -237,47 +372,68 @@ function metaItem(k, v){
   return `<div><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`;
 }
 
-function renderCompany(d){
-  const mcap = (d.mcap == null) ? "—"
-    : Number(d.mcap).toLocaleString("en-IN", {maximumFractionDigits:2});
+function renderCompanyBlock(d){
+  if(!d.found){
+    return `<div class="co-block miss">No BSE match for “${esc(d.query)}”.</div>`;
+  }
+  const mcap = fmtCr(d.mcap);
   const link = (u, t) => u ? `<a href="${esc(u)}" target="_blank" rel="noopener">${t}</a>` : "—";
-  $("#summary").innerHTML = `
+  const asof = d.quarter_end || "—";
+  const win = (d.adjust_from && d.adjust_to)
+    ? `${esc(d.adjust_from)} → ${esc(d.adjust_to)}` : "—";
+  return `<div class="co-block">
     <h2>${esc(d.name)}</h2>
     <div class="meta">
       ${metaItem("BSE Ticker", esc(d.bse_ticker) || "—")}
       ${metaItem("BSE Scrip Code", esc(d.scripcode) || "—")}
       ${metaItem("NSE Ticker", esc(d.nse_ticker) || "—")}
       ${metaItem("ISIN", esc(d.isin) || "—")}
-      ${metaItem("Mcap Full (Cr.)", mcap)}
+      ${metaItem("Live Mcap (Cr.)", mcap)}
+      ${metaItem("Shares Outstanding", fmtSh(d.shares_outstanding))}
       ${metaItem("Latest Quarter", esc(d.quarter) || "—")}
+      ${metaItem("SHP as-of", esc(asof))}
+      ${metaItem("Block/bulk window", win)}
       ${metaItem("Promoter Statement", link(d.prom_url, "Open"))}
       ${metaItem("Public Statement", link(d.pub_url, "Open"))}
-    </div>`;
-
-  $("#promWrap").innerHTML =
-    tableHTML("Promoter &amp; Promoter Group",
-      ["Category / Name of Shareholder", "Promoter / Promoter Group",
-       "Shareholding % (SCRR, 1957 as % of A+B+C2)"],
-      d.promoters);
-
-  $("#pubWrap").innerHTML =
-    tableHTML("Public Shareholders",
-      ["Category / Name of Shareholder", "Bold Heading",
-       "Shareholding % (SCRR, 1957 as % of A+B+C2)"],
-      d.public);
+    </div>
+    ${tableHTML("Promoter &amp; Promoter Group", d.promoters)}
+    ${tableHTML("Public Shareholders", d.public)}
+  </div>`;
 }
 
-function tableHTML(title, headers, rows){
+function holderOf(rw){
+  if (rw && !Array.isArray(rw)) return rw;
+  return {name: rw && rw[0], category: rw && rw[1], pct: rw && rw[2],
+          holding_cr: rw && rw[3], shares: rw && rw[4],
+          bought: rw && rw[5], sold: rw && rw[6],
+          adj_shares: rw && rw[7], adj_pct: rw && rw[8],
+          adj_holding_cr: rw && rw[9]};
+}
+
+function tableHTML(title, rows){
+  const headers = ["Name", "Category", "Shares (SHP)", "SHP %", "Holding (Rs Cr.)",
+                   "Bought after SHP", "Sold after SHP",
+                   "Adj. shares", "Adj. %", "Adj. holding (Rs Cr.)"];
   if(!rows || !rows.length){
     return `<div class="tbl-title">${title}</div>
             <div class="empty">No qualifying rows (&gt; 0%) for this quarter.</div>`;
   }
   const head = headers.map(h => `<th>${h}</th>`).join("");
-  const body = rows.map(rw => `<tr>
-      <td>${esc(rw[0])}</td>
-      <td>${esc(rw[1]) || "—"}</td>
-      <td class="pct">${fmtPct(rw[2])}</td>
-    </tr>`).join("");
+  const body = rows.map(raw => {
+    const rw = holderOf(raw);
+    return `<tr>
+      <td>${esc(rw.name)}</td>
+      <td>${esc(rw.category) || "—"}</td>
+      <td class="pct">${fmtSh(rw.shares)}</td>
+      <td class="pct">${fmtPct(rw.pct)}</td>
+      <td class="pct">${fmtCr(rw.holding_cr)}</td>
+      <td class="pct">${fmtSh(rw.bought)}</td>
+      <td class="pct">${fmtSh(rw.sold)}</td>
+      <td class="pct">${fmtSh(rw.adj_shares)}</td>
+      <td class="pct">${fmtPct(rw.adj_pct)}</td>
+      <td class="pct">${fmtCr(rw.adj_holding_cr)}</td>
+    </tr>`;
+  }).join("");
   return `<div class="tbl-title">${title}</div>
     <div class="tbl-scroll"><table class="shp">
       <thead><tr>${head}</tr></thead><tbody>${body}</tbody>
@@ -285,6 +441,7 @@ function tableHTML(title, headers, rows){
 }
 
 $("#search").addEventListener("click", doSearch);
+$("#dlLookup").addEventListener("click", doDownloadExcel);
 $("#q").addEventListener("keydown", e => { if(e.key === "Enter") doSearch(); });
 </script>
 </body>
