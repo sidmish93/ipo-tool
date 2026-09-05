@@ -66,11 +66,8 @@ chromium`) will keep failing with "Install Google Chrome".
 1. Push this repo to GitHub.
 2. Render → **New → Web Service** → connect the repo.
 3. Environment: **Docker** (auto-detects `Dockerfile`). Do **not** use native Python.
-4. Instance: **Standard (2 GB)** is still the reliable size. The image now
-   has a **512 MB mode** (`LOW_MEM=1`): the IPO list is fetched without Chrome,
-   then Chrome is opened and closed for each company, and NSE block/bulk is
-   skipped. That is slower and can still OOM, but it is the only chance on
-   Starter. A crash still keeps any Excel already written.
+4. Instance: **Standard (2 GB)**. Free/Starter 512 MB almost always kills Chrome
+   right after the IPO list is built (the page then jumps back to the start).
 5. Deploy. Render injects `PORT`; `serve.py` already reads it.
 
 If the service already exists as native Python, open **Settings → Build & Deploy**

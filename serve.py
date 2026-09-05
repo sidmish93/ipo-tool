@@ -19,4 +19,4 @@ if __name__ == "__main__":
     # 2 threads is plenty: generation is serialized to one browser job anyway,
     # the extra thread keeps the UI/status responsive during a run.
     print(f"Serving on http://{host}:{port}")
-    serve(app, host=host, port=port, threads=2)
+    serve(app, host=host, port=port, threads=4)
