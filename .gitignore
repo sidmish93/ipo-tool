@@ -4,5 +4,3 @@ __pycache__/
 venv/
 .env
 output/*.xlsx
-output/job.json
-output/job.json.tmp

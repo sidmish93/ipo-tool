@@ -230,31 +230,11 @@ $("#cancel").addEventListener("click", async () => {
 })();
 
 async function refresh(){
-  let s;
-  try{
-    const r = await fetch("/status");
-    if(!r.ok) throw new Error("status " + r.status);
-    s = await r.json();
-  }catch(e){
-    if(followJob){
-      $("#stage").innerHTML = "<b>Lost connection</b> — retrying…";
-    }
-    return;
-  }
+  const r = await fetch("/status");
+  const s = await r.json();
   if(s.running) followJob = true;
   const hasJob = followJob && !!(s.running || s.finished || (s.log && s.log.length));
   if(!hasJob){
-    if(followJob && $("#log").textContent.trim()){
-      if(poll){ clearInterval(poll); poll = null; }
-      $("#go").disabled = false;
-      $("#cancel").style.display = "none";
-      $("#result").className = "result err";
-      $("#result").textContent = "The server restarted during the run "
-        + "(common on Render when Chrome runs out of memory opening BSE). "
-        + "Use a 2 GB Docker instance and generate again.";
-      $("#result").style.display = "block";
-      return;
-    }
     if(poll){ clearInterval(poll); poll = null; }
     hideProgress();
     return;

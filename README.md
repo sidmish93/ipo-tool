@@ -36,9 +36,8 @@ BSE blocks Playwright's bundled Chromium (403 Access Denied). The app needs
 
 - **This PC:** install Chrome, then `python app.py`.
 - **Render / Docker:** the `Dockerfile` installs real Chrome. The Render
-  service must use the **Docker** environment (not native Python) and
-  **2 GB RAM**. Starter/512 MB dies when Chrome opens BSE. Redeploy after
-  pulling this repo.
+  service must use the **Docker** environment (not native Python) and at
+  least **1 GB RAM** (2 GB is safer). Redeploy after pulling this repo.
 
 ## Run
 

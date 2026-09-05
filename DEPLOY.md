@@ -66,8 +66,7 @@ chromium`) will keep failing with "Install Google Chrome".
 1. Push this repo to GitHub.
 2. Render → **New → Web Service** → connect the repo.
 3. Environment: **Docker** (auto-detects `Dockerfile`). Do **not** use native Python.
-4. Instance: **Standard (2 GB)**. Free/Starter 512 MB almost always kills Chrome
-   right after the IPO list is built (the page then jumps back to the start).
+4. Instance: **Standard (2 GB)** if you can. Free/Starter 512 MB often kills Chrome.
 5. Deploy. Render injects `PORT`; `serve.py` already reads it.
 
 If the service already exists as native Python, open **Settings → Build & Deploy**
